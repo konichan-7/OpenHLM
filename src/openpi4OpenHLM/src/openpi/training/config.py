@@ -21,9 +21,11 @@ import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.g1_policy as g1_policy
 import openpi.policies.libero_policy as libero_policy
+import openpi.policies.simple_g1_dex3_policy as simple_g1_dex3_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
+import openpi.training.manifests as _manifests
 import openpi.training.misc.roboarena_config as roboarena_config
 import openpi.training.optimizer as _optimizer
 import openpi.training.weight_loaders as weight_loaders
@@ -89,6 +91,11 @@ class DataConfig:
 
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
+
+    # Optional explicit episode subset (LeRobot ``episode_index`` values).  Used by
+    # the SIMPLE G1/Dex3 config to train on a frozen manifest while keeping a
+    # held-out validation split in the same dataset copy.  Empty means "all".
+    episode_indices: tuple[int, ...] = ()
 
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
@@ -441,6 +448,71 @@ class LeRobotG1DataConfig(DataConfigFactory):
 
 
 @dataclasses.dataclass(frozen=True)
+class LeRobotSimpleG1Dex3DataConfig(DataConfigFactory):
+    """SIMPLE G1 + dual Dex3-1 tabletop grasp (32-d state, 36-d action).
+
+    Uses the PSI/SIMPLE wire protocol, not the OpenHLM 34-d G1 protocol.  See
+    ``openpi/policies/simple_g1_dex3_policy.py`` for the exact layout.
+
+    ``episode_indices`` optionally restricts training and normalisation statistics
+    to a fixed set of episodes (read from ``<repo_id>/meta/episodes.jsonl``
+    indices).  Leave it empty to use the whole dataset.  The train/val split is
+    materialised as a JSON manifest by ``examples/simple_g1_dex3/make_split.py``
+    and passed in by ``scripts/train_pytorch.py --episode-manifest``.
+    """
+
+    episode_indices: tuple[int, ...] = ()
+    # Optional JSON split manifest; when set, ``episode_indices`` is overridden by
+    # its ``train`` list.  Exposed on the data config so ``compute_norm_stats.py``
+    # (which only takes ``--config-name``) can point at a split too.
+    episode_manifest: str | None = None
+    # Kept explicit (and False) because these actions are absolute joint targets,
+    # absolute height and high-level base commands; a delta transform would change
+    # their meaning.  See the plan, section 7.1.
+    use_delta_joint_actions: bool = False
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        episode_indices = self.episode_indices
+        if self.episode_manifest is not None:
+            manifest = _manifests.load(self.episode_manifest)
+            expected = manifest.get("repo_id")
+            if expected and expected != self.repo_id:
+                raise ValueError(f"manifest {self.episode_manifest} is for {expected!r}, config uses {self.repo_id!r}")
+            episode_indices = tuple(manifest["train"])
+
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/image": "observation.images.egocentric",
+                        "observation/state": "states",
+                        "actions": "action",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+
+        data_transforms = _transforms.Group(
+            inputs=[simple_g1_dex3_policy.SimpleG1Dex3Inputs(model_type=model_config.model_type)],
+            outputs=[simple_g1_dex3_policy.SimpleG1Dex3Outputs()],
+        )
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=ModelTransformFactory()(model_config),
+            use_quantile_norm=True,
+            episode_indices=episode_indices,
+            # The SIMPLE package names the column "action" (singular); the default
+            # "actions" would make LeRobotDataset raise KeyError on delta_timestamps.
+            action_sequence_keys=("action",),
+        )
+
+
+@dataclasses.dataclass(frozen=True)
 class RLDSDroidDataConfig(DataConfigFactory):
     """
     Config for training on DROID, using RLDS data format (for efficient training on larger datasets).
@@ -587,6 +659,11 @@ class TrainConfig:
 
     # Specifies which weights should be frozen.
     freeze_filter: tyro.conf.Suppress[Filter] = dataclasses.field(default_factory=nnx.Nothing)
+
+    # Optional JSON episode-split manifest (see ``openpi/training/manifests.py``).
+    # When set, the data config's ``episode_indices`` is replaced by the manifest's
+    # train split, both for training and for ``compute_norm_stats.py``.
+    episode_manifest: str | None = None
 
     # Determines the data to be trained on.
     data: DataConfigFactory = dataclasses.field(default_factory=FakeDataConfig)
@@ -892,6 +969,51 @@ _CONFIGS = [
         num_train_steps=30_000,
         save_interval=10_000,
     ),
+    TrainConfig(
+        # SIMPLE G1 + dual Dex3-1, single right-hand tabletop grasp.
+        # Data:   local/g1_dex3_tabletop  (LeRobot v2.1, 32-d state, 36-d action)
+        # Assets: ./assets/pi05_simple_g1_dex3_tabletop/norm_stats.json
+        name="pi05_simple_g1_dex3_tabletop",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=36,
+            action_horizon=30,
+            discrete_state_input=True,
+        ),
+        data=LeRobotSimpleG1Dex3DataConfig(
+            repo_id="local/g1_dex3_tabletop",
+            # The dataset's only task string is "grasp the object on the tabletop.",
+            # identical to the client's DEFAULT_PROMPT.  Reading it from the task
+            # keeps train/serve text in sync instead of duplicating the literal.
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        batch_size=4,
+        num_workers=4,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=300,
+            peak_lr=3e-5,
+            decay_steps=10_000,
+            decay_lr=3e-6,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=None,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        pytorch_weight_path="~/.cache/openpi/openpi-assets/checkpoints/pi05_base_pytorch",
+        # 3k-step first pass; extend to 5k-10k only if the validation split says so.
+        num_train_steps=3_000,
+        save_interval=500,
+        # Full fine-tune: no LoRA, nothing frozen.
+        freeze_filter=nnx.Nothing,
+        # Surfaced to the client through the WebSocket handshake so a mismatched
+        # server cannot silently feed a 34-d OpenHLM policy to the SIMPLE client.
+        policy_metadata={
+            "action_protocol": "simple_g1_dex3",
+            "action_dim": 36,
+            "state_dim": 32,
+            "action_horizon": 30,
+            "prompt": "grasp the object on the tabletop.",
+        },
+    ),
     #
     # Fine-tuning Aloha configs.
     #
@@ -1108,7 +1230,22 @@ _CONFIGS_DICT = {config.name: config for config in _CONFIGS}
 
 
 def cli() -> TrainConfig:
-    return tyro.extras.overridable_config_cli({k: (k, v) for k, v in _CONFIGS_DICT.items()})
+    config = tyro.extras.overridable_config_cli({k: (k, v) for k, v in _CONFIGS_DICT.items()})
+    return resolve_manifest(config)
+
+
+def resolve_manifest(config: TrainConfig) -> TrainConfig:
+    """Apply ``config.episode_manifest`` (if any) to the data config."""
+    if config.episode_manifest is None:
+        return config
+    manifest = _manifests.load(config.episode_manifest)
+    logging.info(
+        "Applying episode manifest %s: %d train / %d val episodes",
+        config.episode_manifest,
+        len(manifest["train"]),
+        len(manifest["val"]),
+    )
+    return _manifests.apply_to_config(config, manifest)
 
 
 def get_config(config_name: str) -> TrainConfig:
