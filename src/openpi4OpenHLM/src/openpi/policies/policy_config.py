@@ -60,6 +60,9 @@ def create_trained_policy(
     if is_pytorch:
         model = train_config.model.load_pytorch(train_config, weight_path)
         model.paligemma_with_expert.to_bfloat16_for_selected_params("bfloat16")
+        # Compile the sampling path only for serving.  Calling this in the model
+        # constructor makes training pay for a max-autotune pass it never uses.
+        model.compile_for_inference()
     else:
         model = train_config.model.load(_model.restore_params(checkpoint_dir / "params", dtype=jnp.bfloat16))
     data_config = train_config.data.create(train_config.assets_dirs, train_config.model)

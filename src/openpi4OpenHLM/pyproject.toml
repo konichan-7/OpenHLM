@@ -40,6 +40,12 @@ dependencies = [
     "transformers==4.53.2",
     "rich>=14.0.0",
     "polars>=1.30.0",
+    # pyarrow >= 21 requires numpy >= 2 at import time, but openpi pins
+    # numpy < 2.0; datasets 3.6.0 requires pyarrow >= 15.  Keep the 15-20 band.
+    "pyarrow>=15,<21",
+    # torchcodec >= 0.10 links libnvrtc.so.13, which torch 2.9+cu128 (CUDA 12.8)
+    # does not ship; 0.9.1 is the newest release that imports cleanly here.
+    "torchcodec<0.10",
 ]
 
 

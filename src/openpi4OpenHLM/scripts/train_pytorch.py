@@ -972,7 +972,7 @@ def train_loop(config: _config.TrainConfig):
     if config.pytorch_weight_path is not None:
         logging.info(f"Loading weights from: {config.pytorch_weight_path}")
 
-        model_path = os.path.join(config.pytorch_weight_path, "model.safetensors")
+        model_path = os.path.expanduser(os.path.join(config.pytorch_weight_path, "model.safetensors"))
         model_to_load = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
         
         # Check if we should randomly initialize action expert parameters
