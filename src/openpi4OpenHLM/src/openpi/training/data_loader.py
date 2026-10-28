@@ -1,7 +1,10 @@
 from collections.abc import Iterator, Sequence
+import bisect
+import json
 import logging
 import multiprocessing
 import os
+import pathlib
 import typing
 from typing import Literal, Protocol, SupportsIndex, TypeVar
 
@@ -155,6 +158,33 @@ class EpisodeSubsetDataset(Dataset):
         return self._frame_indices
 
 
+class ConcatDataset(Dataset):
+    """Concatenate several random-access datasets behind one flat index."""
+
+    def __init__(self, datasets: Sequence[Dataset]):
+        if not datasets:
+            raise ValueError("cannot concatenate an empty dataset list")
+        self._datasets = list(datasets)
+        self._ends = []
+        total = 0
+        for dataset in self._datasets:
+            total += len(dataset)
+            self._ends.append(total)
+
+    def __getitem__(self, index: SupportsIndex) -> dict:
+        idx = int(index.__index__())
+        if idx < 0:
+            idx += len(self)
+        if idx < 0 or idx >= len(self):
+            raise IndexError(idx)
+        dataset_idx = bisect.bisect_right(self._ends, idx)
+        start = 0 if dataset_idx == 0 else self._ends[dataset_idx - 1]
+        return self._datasets[dataset_idx][idx - start]
+
+    def __len__(self) -> int:
+        return self._ends[-1]
+
+
 def episode_frame_indices(dataset: Dataset, episode_indices: Sequence[int]) -> np.ndarray:
     """Return flat frame indices belonging to ``episode_indices``.
 
@@ -185,21 +215,47 @@ def create_torch_dataset(
     if repo_id == "fake":
         return FakeDataset(model_config, num_samples=1024)
 
-    dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
-    dataset = lerobot_dataset.LeRobotDataset(
-        data_config.repo_id,
-        delta_timestamps={
-            key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
-        },
-    )
+    def load_repo(repo: str, episode_indices: Sequence[int] | None = None) -> Dataset:
+        metadata = lerobot_dataset.LeRobotDatasetMetadata(repo)
+        dataset = lerobot_dataset.LeRobotDataset(
+            repo,
+            delta_timestamps={
+                key: [t / metadata.fps for t in range(action_horizon)]
+                for key in data_config.action_sequence_keys
+            },
+        )
+        if episode_indices:
+            dataset = EpisodeSubsetDataset(dataset, episode_frame_indices(dataset, episode_indices))
+        if data_config.prompt_from_task:
+            dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(metadata.tasks)])
+        return dataset
 
-    if data_config.episode_indices:
-        dataset = EpisodeSubsetDataset(dataset, episode_frame_indices(dataset, data_config.episode_indices))
+    if data_config.dataset_manifest is not None:
+        manifest_path = pathlib.Path(data_config.dataset_manifest)
+        manifest = json.loads(manifest_path.read_text())
+        specs = manifest.get("datasets")
+        if not specs:
+            raise ValueError(f"{manifest_path} has no 'datasets' entries")
+        datasets = []
+        fps_values = set()
+        for spec in specs:
+            if "repo_id" not in spec:
+                raise ValueError(f"dataset entry missing repo_id in {manifest_path}: {spec}")
+            metadata = lerobot_dataset.LeRobotDatasetMetadata(spec["repo_id"])
+            fps_values.add(float(metadata.fps))
+            episodes = spec.get("train", spec.get("episode_indices"))
+            datasets.append(load_repo(spec["repo_id"], episodes))
+        if len(fps_values) != 1:
+            raise ValueError(f"multi-repo training requires one fps, got {sorted(fps_values)}")
+        logging.info(
+            "Loaded multi-repo dataset: %d repos, %d frames, fps=%s",
+            len(datasets),
+            sum(len(dataset) for dataset in datasets),
+            fps_values.pop(),
+        )
+        return ConcatDataset(datasets)
 
-    if data_config.prompt_from_task:
-        dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
-
-    return dataset
+    return load_repo(repo_id, data_config.episode_indices)
 
 
 def create_rlds_dataset(

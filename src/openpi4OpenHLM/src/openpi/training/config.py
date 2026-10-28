@@ -97,6 +97,12 @@ class DataConfig:
     # held-out validation split in the same dataset copy.  Empty means "all".
     episode_indices: tuple[int, ...] = ()
 
+    # Optional multi-repository JSON manifest.  Each entry names a LeRobot repo
+    # and its selected training episode indices.  When set, ``repo_id`` is only
+    # used as the asset identifier; the loader builds a concatenated dataset from
+    # the manifest instead of opening a single repository.
+    dataset_manifest: str | None = None
+
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
     # Action space for DROID dataset.
@@ -466,6 +472,9 @@ class LeRobotSimpleG1Dex3DataConfig(DataConfigFactory):
     # its ``train`` list.  Exposed on the data config so ``compute_norm_stats.py``
     # (which only takes ``--config-name``) can point at a split too.
     episode_manifest: str | None = None
+    # Optional multi-repository training manifest.  Kept on the data factory so
+    # the training config can point at a curated set of tasks.
+    dataset_manifest: str | None = None
     # Kept explicit (and False) because these actions are absolute joint targets,
     # absolute height and high-level base commands; a delta transform would change
     # their meaning.  See the plan, section 7.1.
@@ -506,6 +515,7 @@ class LeRobotSimpleG1Dex3DataConfig(DataConfigFactory):
             model_transforms=ModelTransformFactory()(model_config),
             use_quantile_norm=True,
             episode_indices=episode_indices,
+            dataset_manifest=self.dataset_manifest,
             # The SIMPLE package names the column "action" (singular); the default
             # "actions" would make LeRobotDataset raise KeyError on delta_timestamps.
             action_sequence_keys=("action",),
@@ -1011,6 +1021,47 @@ _CONFIGS = [
             "action_dim": 36,
             "state_dim": 32,
             "action_horizon": 30,
+            "prompt": "grasp the object on the tabletop.",
+        },
+    ),
+    TrainConfig(
+        # Fixed-base, non-loco multi-task training set:
+        # tabletop grasp + bend-pick MP + bend-pick teleop.
+        name="pi05_simple_g1_dex3_multitask",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=36,
+            action_horizon=30,
+            discrete_state_input=True,
+        ),
+        data=LeRobotSimpleG1Dex3DataConfig(
+            repo_id="local/g1_dex3_multitask",
+            assets=AssetsConfig(asset_id="g1_dex3_multitask"),
+            dataset_manifest="assets/simple_g1_dex3/multitask_manifest.json",
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        batch_size=4,
+        num_workers=4,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=500,
+            peak_lr=3e-5,
+            decay_steps=12_000,
+            decay_lr=3e-6,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=None,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        pytorch_weight_path="~/.cache/openpi/openpi-assets/checkpoints/pi05_base_pytorch",
+        # One epoch over the selected non-loco training set (45k frames, batch 4).
+        num_train_steps=12_000,
+        save_interval=1_000,
+        freeze_filter=nnx.Nothing,
+        policy_metadata={
+            "action_protocol": "simple_g1_dex3",
+            "action_dim": 36,
+            "state_dim": 32,
+            "action_horizon": 30,
+            "training_tasks": 3,
             "prompt": "grasp the object on the tabletop.",
         },
     ),
