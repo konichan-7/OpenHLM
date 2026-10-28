@@ -164,8 +164,12 @@ class Pi05OpenhlmAgent(PrimitiveAgent):
         self.instruction = instruction or DEFAULT_PROMPT
         self.upsample_factor = int(upsample_factor)
         self.max_chunk = max_chunk
-        self.client = client or _websocket_client_policy.WebsocketClientPolicy(host=host, port=port, api_key=None)
-        self._check_server_metadata()
+        # SIMPLE creates the agent before its 60-step stand warmup.  Connecting
+        # here leaves the socket idle long enough for the bundled websockets
+        # client to drop it, so connect lazily on the first inference instead.
+        self.client = client
+        if client is not None:
+            self._check_server_metadata()
 
         self._global_step_idx = 0
         self._last_cmd_torso_rpyh = np.array([0.0, -0.15, 0.0, NOMINAL_HEIGHT], dtype=np.float32)
@@ -173,6 +177,15 @@ class Pi05OpenhlmAgent(PrimitiveAgent):
         self._last_chunk: np.ndarray | None = None
 
     # --------------------------------------------------------------- handshake
+    def _ensure_client(self) -> None:
+        if self.client is None:
+            self.client = _websocket_client_policy.WebsocketClientPolicy(
+                host=self.server_ip,
+                port=self.server_port,
+                api_key=None,
+            )
+            self._check_server_metadata()
+
     def _check_server_metadata(self) -> None:
         """Fail fast if the server is not the matching 32/36-d policy.
 
@@ -238,6 +251,8 @@ class Pi05OpenhlmAgent(PrimitiveAgent):
 
         if len(self._action_queue) == 0:
             obs = self._build_observation(observation)
+            self._ensure_client()
+            assert self.client is not None
             response = self.client.infer(obs)
             if not isinstance(response, dict) or "actions" not in response:
                 raise RuntimeError(f"policy server returned unexpected payload: {type(response)}")
@@ -265,6 +280,10 @@ class Pi05OpenhlmAgent(PrimitiveAgent):
         # episode cannot leak targets into the next one.
         self._action_queue.clear()
         super().reset()
+        ws = getattr(self.client, "_ws", None) if self.client is not None else None
+        if ws is not None:
+            ws.close()
+        self.client = None
         self._global_step_idx = 0
         self._reset_history = True
         self._last_qpos = None
