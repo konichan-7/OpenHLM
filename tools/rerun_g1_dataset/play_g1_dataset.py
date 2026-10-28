@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Play one SIMPLE G1/Dex3 episode with the real G1 URDF in Rerun.
+"""Play SIMPLE G1/Dex3 episodes with the real G1 URDF in Rerun.
 
 The released LeRobot episode stores:
 
@@ -12,11 +12,15 @@ This script runs forward kinematics with ``yourdfpy`` and logs the URDF's 49
 visual meshes plus the camera stream to Rerun.  The generated ``.rrd`` can be
 opened with the local ``rerun`` viewer.
 
-Example:
+Examples:
 
     /home/pc/.venvs/rerun-g1/bin/python tools/rerun_g1_dataset/play_g1_dataset.py \
       --episode 0 \
       --out artifacts/simple_g1_dex3/rerun/episode_000000.rrd
+
+    /home/pc/.venvs/rerun-g1/bin/python tools/rerun_g1_dataset/play_g1_dataset.py \
+      --all \
+      --out artifacts/simple_g1_dex3/rerun/full_dataset.rrd
 
     rerun artifacts/simple_g1_dex3/rerun/episode_000000.rrd
 """
@@ -127,24 +131,20 @@ def _four_by_four_matrix_to_transform(matrix: np.ndarray) -> rr.Transform3D:
     )
 
 
-def play(
+def play_episodes(
     dataset_root: pathlib.Path,
     urdf_path: pathlib.Path,
-    episode: int,
+    episodes: list[int],
     out_path: pathlib.Path,
 ) -> None:
-    parquet_path = dataset_root / f"data/chunk-000/episode_{episode:06d}.parquet"
-    video_path = dataset_root / f"videos/chunk-000/egocentric/episode_{episode:06d}.mp4"
-    if not parquet_path.exists() or not video_path.exists():
-        raise FileNotFoundError(f"episode {episode} is missing parquet or video")
-
+    if not episodes:
+        raise ValueError("no episodes selected")
     urdf = URDF.load(
         urdf_path,
         load_meshes=False,
         build_scene_graph=True,
     )
     joint_names = _urdf_joint_names(urdf)
-    joint_frames, heights = _load_joint_episode(parquet_path)
 
     blueprint = rr.blueprint.Blueprint(
         rr.blueprint.Horizontal(
@@ -153,57 +153,84 @@ def play(
             column_shares=[2.0, 1.0],
         ),
     )
-    rr.init(f"openhlm_g1_episode_{episode:06d}", spawn=False, default_blueprint=blueprint)
+    app_id = "openhlm_g1_full_dataset" if len(episodes) > 1 else f"openhlm_g1_episode_{episodes[0]:06d}"
+    rr.init(app_id, spawn=False, default_blueprint=blueprint)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     rr.save(out_path)
 
-    mesh_entities = _log_static_meshes(urdf, urdf_path.parent)
+    _log_static_meshes(urdf, urdf_path.parent)
     rr.log(
         "dataset",
-        rr.TextLog(f"G1 + Dex3 URDF | episode {episode:06d} | {len(joint_frames)} frames | 50 Hz"),
+        rr.TextLog(
+            f"G1 + Dex3 URDF | {len(episodes)} episode(s) | "
+            f"{episodes[0]:06d}..{episodes[-1]:06d} | 50 Hz"
+        ),
         static=True,
     )
 
-    container = av.open(str(video_path))
-    stream = container.streams.video[0]
-    fps = float(stream.average_rate or 50)
-    video_iter = container.decode(video=0)
+    total_frames = 0
+    total_seconds = 0.0
+    for episode in episodes:
+        parquet_path = dataset_root / f"data/chunk-000/episode_{episode:06d}.parquet"
+        video_path = dataset_root / f"videos/chunk-000/egocentric/episode_{episode:06d}.mp4"
+        if not parquet_path.exists() or not video_path.exists():
+            raise FileNotFoundError(f"episode {episode} is missing parquet or video")
 
-    count = 0
-    for frame_idx in range(len(joint_frames)):
-        try:
-            video_frame = next(video_iter)
-        except StopIteration:
-            print(f"warning: video ended at frame {frame_idx}", file=sys.stderr)
-            break
+        joint_frames, heights = _load_joint_episode(parquet_path)
+        container = av.open(str(video_path))
+        stream = container.streams.video[0]
+        fps = float(stream.average_rate or 50)
+        video_iter = container.decode(video=0)
+        print(f"episode {episode:06d}: {len(joint_frames)} frames")
 
-        cfg = {
-            name: float(value)
-            for name, value in zip(joint_names, joint_frames[str(frame_idx)], strict=True)
-        }
-        urdf.update_cfg(cfg)
+        for frame_idx in range(len(joint_frames)):
+            try:
+                video_frame = next(video_iter)
+            except StopIteration:
+                print(f"warning: episode {episode:06d} video ended at frame {frame_idx}", file=sys.stderr)
+                break
 
-        base = np.eye(4, dtype=np.float32)
-        base[2, 3] = float(heights[frame_idx])
+            cfg = {
+                name: float(value)
+                for name, value in zip(joint_names, joint_frames[str(frame_idx)], strict=True)
+            }
+            urdf.update_cfg(cfg)
+            base = np.eye(4, dtype=np.float32)
+            base[2, 3] = float(heights[frame_idx])
 
-        rr.set_time("frame", sequence=frame_idx)
-        rr.set_time("time", duration=frame_idx / fps)
-        for link_name, entity in mesh_entities.items():
-            link_transform = urdf.get_transform(link_name)
-            for visual_idx, visual in enumerate(urdf.link_map[link_name].visuals):
-                if visual.geometry.mesh is None:
-                    continue
-                visual_entity = f"world/g1/{link_name}/visual_{visual_idx}"
-                transform = base @ link_transform @ visual.origin
-                rr.log(visual_entity, _four_by_four_matrix_to_transform(transform))
+            rr.set_time("episode", sequence=episode)
+            rr.set_time("frame", sequence=total_frames)
+            rr.set_time("time", duration=total_seconds)
+            rr.log("metrics/episode", rr.Scalars(float(episode)))
+            rr.log("metrics/height", rr.Scalars(float(heights[frame_idx])))
 
-        image = video_frame.to_ndarray(format="rgb24")
-        rr.log("camera/head", rr.Image(image))
-        count += 1
+            for link_name in urdf.link_map:
+                link_transform = urdf.get_transform(link_name)
+                for visual_idx, visual in enumerate(urdf.link_map[link_name].visuals):
+                    if visual.geometry.mesh is None:
+                        continue
+                    visual_entity = f"world/g1/{link_name}/visual_{visual_idx}"
+                    transform = base @ link_transform @ visual.origin
+                    rr.log(visual_entity, _four_by_four_matrix_to_transform(transform))
 
-    container.close()
+            image = video_frame.to_ndarray(format="rgb24")
+            rr.log("camera/head", rr.Image(image))
+            total_frames += 1
+            total_seconds += 1.0 / fps
+
+        container.close()
+
     rr.disconnect()
-    print(f"wrote {out_path} ({count} frames)")
+    print(f"wrote {out_path} ({len(episodes)} episodes, {total_frames} frames, {total_seconds:.2f}s)")
+
+
+def play(
+    dataset_root: pathlib.Path,
+    urdf_path: pathlib.Path,
+    episode: int,
+    out_path: pathlib.Path,
+) -> None:
+    play_episodes(dataset_root, urdf_path, [episode], out_path)
 
 
 def main() -> int:
@@ -221,14 +248,27 @@ def main() -> int:
             "gear_sonic/data/robots/g1/g1_29dof_with_hand_rev_1_0.urdf"
         ),
     )
-    ap.add_argument("--episode", type=int, default=0)
+    ap.add_argument("--episode", type=int, default=None, help="single episode index")
+    ap.add_argument("--all", action="store_true", help="play every episode in order")
     ap.add_argument(
         "--out",
         type=pathlib.Path,
-        default=pathlib.Path("artifacts/simple_g1_dex3/rerun/episode_000000.rrd"),
+        default=None,
     )
     args = ap.parse_args()
-    play(args.dataset_root, args.urdf, args.episode, args.out)
+    if args.all:
+        episodes = sorted(
+            int(path.stem.split("_")[-1])
+            for path in args.dataset_root.glob("data/chunk-*/episode_*.parquet")
+        )
+        default_out = pathlib.Path("artifacts/simple_g1_dex3/rerun/full_dataset.rrd")
+    else:
+        episodes = [0 if args.episode is None else args.episode]
+        default_out = pathlib.Path(
+            f"artifacts/simple_g1_dex3/rerun/episode_{episodes[0]:06d}.rrd"
+        )
+    out = args.out or default_out
+    play_episodes(args.dataset_root, args.urdf, episodes, out)
     return 0
 
 
