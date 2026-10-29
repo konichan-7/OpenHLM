@@ -1,6 +1,6 @@
 # SIMPLE G1 + 双 Dex3-1 抓取：π0.5 全参微调
 
-配套方案：[`docs/g1_dex3_pi05_simple_pipeline_plan.md`](../../../docs/g1_dex3_pi05_simple_pipeline_plan.md)
+配套方案：[`docs/g1_dex3_pi05_simple_pipeline_plan.md`](../../../../docs/g1_dex3_pi05_simple_pipeline_plan.md)
 
 协议（写死在第一阶段）：**单视角 + 32 维状态 + 36 维动作**。不是 OpenHLM 原来的 34 维 G1 协议，也不是 43 维全身关节。
 
@@ -179,7 +179,7 @@ PYTHONPATH=src python scripts/compute_norm_stats.py \
   --episode-manifest assets/simple_g1_dex3/tabletop_split.json
 ```
 
-产物：`assets/pi05_simple_g1_dex3_tabletop/norm_stats.json`（`stats` 32 维、`actions` 36 维）。
+产物：`assets/pi05_simple_g1_dex3_tabletop/local/g1_dex3_tabletop/norm_stats.json`（`state` 32 维、`actions` 36 维）。
 
 `--episode-manifest` 会同时作用于训练和统计；**不要**用全量数据算统计再训练子集。
 
@@ -268,9 +268,11 @@ PYTHONPATH=src python scripts/serve_policy.py \
   --policy.config pi05_simple_g1_dex3_tabletop
 ```
 
-客户端（SIMPLE 环境）：
+客户端（SIMPLE 环境，先安装本目录保留的适配器）：
 
 ```bash
+bash /path/to/OpenHLM/src/openpi4OpenHLM/examples/simple_g1_dex3/install_simple_client.sh /path/to/SIMPLE
+cd /path/to/SIMPLE
 python -m simple.cli.eval --policy pi05_openhlm --env simple/G1WholebodyTabletopGraspMP-v0 \
   --host <server-ip> --port 8000
 ```
@@ -306,3 +308,13 @@ python -m simple.cli.eval --policy replay --env simple/G1WholebodyTabletopGraspM
 - 训练场景闭环只算拟合检查；泛化结论只能用官方评测包。
 - 底座指令（32:36）在本任务中是常量，模型在这四个维度上没有可学习信号，由 `pin_constant_dims()` 兜底；torso rpy 仍有小幅真实变化，交给模型。
 - 8 GB 笔记本只做数据检查和客户端调试；训练与推理都在 A100 上。
+
+
+## 11. 非移动多任务训练
+
+使用 `pi05_simple_g1_dex3_multitask` 配置，保留同一个 32-state / 36-action 协议。
+通过 `make_multitask_manifest.py` 选择各任务的非移动 episodes，再分别计算统计和
+启动训练。具体命令见 [训练代码导读第 21 节](../../../../docs/g1_dex3_training_code_walkthrough.md#21-多任务训练命令)。
+
+对应的链路检查为 `test_multitask_pipeline.py`。当前统计覆盖各 repo 的 train split；
+多任务推理的 prompt 需要客户端显式传入。`deploy_server.sh` 仍是桌面抓取单任务入口。

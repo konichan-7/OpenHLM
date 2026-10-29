@@ -36,13 +36,13 @@ class AssetsConfig:
     These assets will be replicated inside the checkpoint under the `assets/asset_id` directory.
 
     This can be used to load assets from a different checkpoint (e.g., base model checkpoint) or some other
-    centralized location. For example, to load the norm stats for the Trossen robot from the base model checkpoint
-    during fine-tuning, use:
+    centralized location. For example, to reuse statistics from a matching G1 Dex3
+    training checkpoint, use:
 
     ```
     AssetsConfig(
-        assets_dir="gs://openpi-assets/checkpoints/pi0_base/assets",
-        asset_id="trossen",
+        assets_dir="./checkpoints/pi05_simple_g1_dex3_tabletop/run1/3000/assets",
+        asset_id="local/g1_dex3_tabletop",
     )
     ```
     """
@@ -412,7 +412,7 @@ _CONFIGS = [
     TrainConfig(
         # SIMPLE G1 + dual Dex3-1, single right-hand tabletop grasp.
         # Data:   local/g1_dex3_tabletop  (LeRobot v2.1, 32-d state, 36-d action)
-        # Assets: ./assets/pi05_simple_g1_dex3_tabletop/norm_stats.json
+        # Assets: ./assets/pi05_simple_g1_dex3_tabletop/local/g1_dex3_tabletop/norm_stats.json
         name="pi05_simple_g1_dex3_tabletop",
         model=pi0_config.Pi0Config(
             pi05=True,
