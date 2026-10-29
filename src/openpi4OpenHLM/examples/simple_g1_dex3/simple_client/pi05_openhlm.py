@@ -39,6 +39,8 @@ left-hand swap again, which double-permutes and silently mis-drives the fingers.
 from __future__ import annotations
 
 import logging
+import os
+from collections import deque
 
 import numpy as np
 from openpi_client import websocket_client_policy as _websocket_client_policy
@@ -69,6 +71,33 @@ CONST_TARGET_YAW = 0.0
 # Left hand only: it is stored as thumb/middle/index.  The right hand is already
 # thumb/index/middle in the dataset.
 LEFT_HAND_TO_PD = (0, 1, 2, 5, 6, 3, 4)
+
+
+def blend_chunk_start(actions: np.ndarray, previous: np.ndarray | None, steps: int) -> np.ndarray:
+    """Fade a boundary offset out over ``steps`` model frames, in dataset order.
+
+    This is a synchronous boundary bridge, NOT asynchronous overlap/RTC. Preserve
+    the new chunk's relative motion and horizon; only correct its first 31 joint
+    and torso coordinates. Height and discrete/base commands are never blended.
+    """
+    result = np.array(actions, dtype=np.float32, copy=True)
+    if result.ndim != 2 or result.shape[1] != ACTION_DIM or not len(result):
+        raise ValueError(f"expected nonempty (H, {ACTION_DIM}), got {result.shape}")
+    if not np.isfinite(result).all() or steps < 0:
+        raise ValueError("actions must be finite and blend steps must be nonnegative")
+    if previous is None or steps == 0:
+        return result
+    previous = np.asarray(previous, dtype=np.float32)
+    if previous.shape != (ACTION_DIM,) or not np.isfinite(previous).all():
+        raise ValueError("previous action must be a finite 36-d vector")
+    count = min(steps, len(result))
+    if count == 1:
+        return result
+    phase = np.linspace(0.0, 1.0, count, dtype=np.float32)
+    weight = phase * phase * (3.0 - 2.0 * phase)
+    offset = previous[:31] - result[0, :31]
+    result[:count, :31] += (1.0 - weight[:, None]) * offset
+    return result
 
 
 def build_state(proprio11, last_cmd_torso_rpyh: np.ndarray) -> np.ndarray:
@@ -152,18 +181,28 @@ class Pi05OpenhlmAgent(PrimitiveAgent):
         instruction: str | None = None,
         upsample_factor: int = 1,
         max_chunk: int | None = None,
+        chunk_blend_steps: int | None = None,
         client=None,
         **kwargs,
     ):
         super().__init__(robot, **kwargs)
         if upsample_factor < 1:
             raise ValueError("upsample_factor must be >= 1")
+        if max_chunk is not None and max_chunk < 1:
+            raise ValueError("max_chunk must be >= 1")
+        if chunk_blend_steps is None:
+            chunk_blend_steps = int(os.environ.get("SIMPLE_CHUNK_BLEND_STEPS", "6"))
+        if chunk_blend_steps < 0:
+            raise ValueError("chunk_blend_steps must be >= 0")
 
         self.server_ip = host
         self.server_port = port
         self.instruction = instruction or DEFAULT_PROMPT
         self.upsample_factor = int(upsample_factor)
         self.max_chunk = max_chunk
+        self.chunk_blend_steps = chunk_blend_steps
+        self._dataset_action_queue = deque()
+        self._last_executed_action: np.ndarray | None = None
         # SIMPLE creates the agent before its 60-step stand warmup.  Connecting
         # here leaves the socket idle long enough for the bundled websockets
         # client to drop it, so connect lazily on the first inference instead.
@@ -230,6 +269,9 @@ class Pi05OpenhlmAgent(PrimitiveAgent):
             raise ValueError("policy returned non-finite actions")
         if self.max_chunk is not None:
             actions = actions[: self.max_chunk]
+        if self._action_queue or self._dataset_action_queue:
+            raise RuntimeError("cannot replace a chunk before its queue is exhausted")
+        actions = blend_chunk_start(actions, self._last_executed_action, self.chunk_blend_steps)
         self._last_chunk = actions
 
         for row in actions:
@@ -244,6 +286,7 @@ class Pi05OpenhlmAgent(PrimitiveAgent):
                         waist_qpos=waist_qpos,
                     )
                 )
+                self._dataset_action_queue.append(row.copy())
 
     def get_action(self, observation, instruction=None, info=None, conditions=None, **kwargs):
         self._last_observation = observation
@@ -260,6 +303,7 @@ class Pi05OpenhlmAgent(PrimitiveAgent):
 
         action_cmd = super().get_action(observation, instruction, **kwargs)
         if action_cmd.type == "eval_move_actuators":
+            self._last_executed_action = self._dataset_action_queue.popleft()
             # History for the next observation: the command we just issued.
             self._last_cmd_torso_rpyh = np.array(
                 [
@@ -290,6 +334,8 @@ class Pi05OpenhlmAgent(PrimitiveAgent):
         self._last_observation = None
         self._last_pred_action = None
         self._last_chunk = None
+        self._dataset_action_queue.clear()
+        self._last_executed_action = None
         self._last_cmd_torso_rpyh = np.array([0.0, -0.15, 0.0, NOMINAL_HEIGHT], dtype=np.float32)
 
     # ------------------------------------------------------------- inspection

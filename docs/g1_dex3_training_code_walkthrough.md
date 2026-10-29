@@ -2,7 +2,7 @@
 
 本文只讲解你为 **Unitree G1 + 左右 Dex3-1** 新增和修改的训练代码，不展开其它机器人的配置。
 
-代码讲解基线：`main@0bcb52b`。2026-10-29 精简后，本篇涉及的 G1 数据/训练协议保留，
+代码讲解基线：`main@019d766`。2026-10-29 精简后，本篇涉及的 G1 数据/训练协议保留，
 无关机器人适配器和 RLDS 分支已移除；源码行号可能随精简移动。相关实现主要来自以下提交：
 
 | 提交 | 内容 |
@@ -1181,7 +1181,7 @@ AMO command        = [..., yaw, pitch, roll]
 
 两种顺序不同是有意的。
 
-### 18.3 Action chunk 排队
+### 18.3 Action chunk 排队与边界桥接
 
 当内部队列为空时：
 
@@ -1189,10 +1189,15 @@ AMO command        = [..., yaw, pitch, roll]
 发送一幅图 + 32 维 state + prompt
 → 服务端返回 [H,36]
 → 校验 shape/finite
+→ 与上一块末条实际执行目标做 6 帧 smoothstep 边界桥接
 → 每行 split_action()
 → 转成 eval_move_actuators
 → 进入 PrimitiveAgent 队列
 ```
+
+`chunk_blend_steps` 默认 6，也可用 `SIMPLE_CHUNK_BLEND_STEPS` 覆盖。桥接只改 action `0:31`
+（手、臂、torso），保持新 chunk 的相对运动趋势；height 和离散/base command `31:36` 不混合。
+它只处理边界位置突变，不是异步推理、latency compensation 或完整速度/加速度限制。
 
 `upsample_factor` 可以把同一模型动作重复执行多次；`max_chunk` 可以只执行 chunk 前若干步。
 

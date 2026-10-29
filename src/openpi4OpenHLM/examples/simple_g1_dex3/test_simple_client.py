@@ -14,6 +14,7 @@ import importlib.util
 import pathlib
 import sys
 import types
+from collections import deque
 
 import numpy as np
 
@@ -37,9 +38,16 @@ def _load_client():
     class PrimitiveAgent:
         def __init__(self, robot, **kwargs):
             self.robot = robot
+            self._action_queue = deque()
+
+        def queue_action(self, command):
+            self._action_queue.append(command)
+
+        def get_action(self, observation, instruction=None, **kwargs):
+            return self._action_queue.popleft()
 
         def reset(self):
-            pass
+            self._action_queue.clear()
 
     class ActionCmd:
         def __init__(self, type, **parameters):
@@ -125,7 +133,51 @@ def main() -> int:
     np.testing.assert_array_equal(state, expected_state)
     assert state.shape == (32,)
 
-    print("SIMPLE CLIENT MAPPING OK")
+    raw = np.ones((30, 36), dtype=np.float32)
+    previous = np.zeros(36, dtype=np.float32)
+    bridge = client.blend_chunk_start(raw, previous, 6)
+    assert bridge.shape == raw.shape
+    np.testing.assert_array_equal(bridge[0, :31], previous[:31])
+    assert np.all(np.diff(bridge[:6, 14]) > 0)
+    np.testing.assert_array_equal(bridge[5:], raw[5:])
+    np.testing.assert_array_equal(bridge[:, 31:], raw[:, 31:])
+    np.testing.assert_array_equal(raw, 1.0)
+    np.testing.assert_array_equal(client.blend_chunk_start(raw, previous, 0), raw)
+    np.testing.assert_array_equal(client.blend_chunk_start(raw, None, 6), raw)
+    assert np.isfinite(client.blend_chunk_start(raw[:2], previous, 6)).all()
+    for bad in (np.zeros((0, 36)), np.zeros((30, 35)), np.full((30, 36), np.nan)):
+        try:
+            client.blend_chunk_start(bad, previous, 6)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("invalid chunk was accepted")
+
+    class FakeClient:
+        def get_server_metadata(self):
+            return {"action_protocol": "simple_g1_dex3", "action_dim": 36}
+
+    robot = types.SimpleNamespace(joint_names=[f"joint_{i}" for i in range(43)])
+    agent = client.Pi05OpenhlmAgent(robot, "localhost", 8000, client=FakeClient(), upsample_factor=2)
+    first = np.zeros((3, 36), dtype=np.float32)
+    agent._enqueue_chunk(first)
+    assert len(agent._action_queue) == len(agent._dataset_action_queue) == 6
+    obs = {"joint_qpos": np.zeros(43)}
+    for _ in range(6):
+        agent.get_action(obs)
+    np.testing.assert_array_equal(agent._last_executed_action, first[-1])
+    agent._enqueue_chunk(raw)
+    assert agent.get_last_chunk()[0, 14] < 0.1
+    agent.get_action(obs)
+    np.testing.assert_array_equal(agent._last_executed_action, agent.get_last_chunk()[0])
+    np.testing.assert_allclose(agent._last_cmd_torso_rpyh[:3], agent.get_last_chunk()[0, 28:31])
+    agent.reset()
+    assert not agent._action_queue and not agent._dataset_action_queue
+    assert agent._last_executed_action is None
+    agent._enqueue_chunk(raw)
+    np.testing.assert_array_equal(agent.get_last_chunk(), raw)
+
+    print("SIMPLE CLIENT MAPPING + CHUNK BRIDGE OK")
     return 0
 
 
