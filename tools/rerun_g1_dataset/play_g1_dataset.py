@@ -243,10 +243,8 @@ def main() -> int:
     ap.add_argument(
         "--urdf",
         type=pathlib.Path,
-        default=pathlib.Path(
-            "/home/pc/桌面/reappear/OpenHLM/src/GR00T-WholeBodyControl4OpenHLM/"
-            "gear_sonic/data/robots/g1/g1_29dof_with_hand_rev_1_0.urdf"
-        ),
+        default=pathlib.Path(__file__).resolve().parents[2]
+        / "assets/g1/g1_29dof_with_hand_rev_1_0.urdf",
     )
     ap.add_argument("--episode", type=int, default=None, help="single episode index")
     ap.add_argument("--all", action="store_true", help="play every episode in order")

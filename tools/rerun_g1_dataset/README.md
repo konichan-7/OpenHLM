@@ -15,8 +15,9 @@ uv pip install --python ~/.venvs/rerun-g1/bin/python \
 ## Generate a recording
 
 ```bash
-cd /home/pc/桌面/reappear/OpenHLM
+cd /path/to/OpenHLM
 ~/.venvs/rerun-g1/bin/python tools/rerun_g1_dataset/play_g1_dataset.py \
+  --dataset-root /path/to/G1WholebodyTabletopGraspMP-v0 \
   --episode 0 \
   --out artifacts/simple_g1_dex3/rerun/episode_000000.rrd
 ```
@@ -24,8 +25,9 @@ cd /home/pc/桌面/reappear/OpenHLM
 Play the complete 100-episode dataset continuously:
 
 ```bash
-cd /home/pc/桌面/reappear/OpenHLM
+cd /path/to/OpenHLM
 ~/.venvs/rerun-g1/bin/python tools/rerun_g1_dataset/play_g1_dataset.py \
+  --dataset-root /path/to/G1WholebodyTabletopGraspMP-v0 \
   --all \
   --out artifacts/simple_g1_dex3/rerun/full_dataset.rrd
 ```
@@ -56,3 +58,8 @@ play the full 4-minute sequence.
 
 The right-hand dataset order is thumb/index/middle; the URDF order is
 thumb/middle/index, so the playback script applies that single permutation.
+
+The default URDF is resolved relative to this script at
+`assets/g1/g1_29dof_with_hand_rev_1_0.urdf`. Fetch its meshes with
+`git lfs pull --include="assets/g1/meshes/**"` before playback. See
+[asset provenance](../../assets/g1/SOURCE.md). Override it with `--urdf` if needed.
