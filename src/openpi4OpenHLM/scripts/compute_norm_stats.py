@@ -59,35 +59,6 @@ def create_torch_dataloader(
     return data_loader, num_batches
 
 
-def create_rlds_dataloader(
-    data_config: _config.DataConfig,
-    action_horizon: int,
-    batch_size: int,
-    max_frames: int | None = None,
-) -> tuple[_data_loader.Dataset, int]:
-    dataset = _data_loader.create_rlds_dataset(data_config, action_horizon, batch_size, shuffle=False)
-    dataset = _data_loader.IterableTransformedDataset(
-        dataset,
-        [
-            *data_config.repack_transforms.inputs,
-            *data_config.data_transforms.inputs,
-            # Remove strings since they are not supported by JAX and are not needed to compute norm stats.
-            RemoveStrings(),
-        ],
-        is_batched=True,
-    )
-    if max_frames is not None and max_frames < len(dataset):
-        num_batches = max_frames // batch_size
-    else:
-        # NOTE: this length is currently hard-coded for DROID.
-        num_batches = len(dataset) // batch_size
-    data_loader = _data_loader.RLDSDataLoader(
-        dataset,
-        num_batches=num_batches,
-    )
-    return data_loader, num_batches
-
-
 def main(config_name: str, episode_manifest: str | None = None, max_frames: int | None = None):
     config = _config.get_config(config_name)
     if episode_manifest is not None:
@@ -98,15 +69,10 @@ def main(config_name: str, episode_manifest: str | None = None, max_frames: int 
     config = _config.resolve_manifest(config)
     data_config = config.data.create(config.assets_dirs, config.model)
 
-    if data_config.rlds_data_dir is not None:
-        data_loader, num_batches = create_rlds_dataloader(
-            data_config, config.model.action_horizon, config.batch_size, max_frames
-        )
-    else:
-        print(f"Using num_workers={config.num_workers}")
-        data_loader, num_batches = create_torch_dataloader(
-            data_config, config.model.action_horizon, config.batch_size, config.model, config.num_workers, max_frames
-        )
+    print(f"Using num_workers={config.num_workers}")
+    data_loader, num_batches = create_torch_dataloader(
+        data_config, config.model.action_horizon, config.batch_size, config.model, config.num_workers, max_frames
+    )
 
     keys = ["state", "actions"]
     stats = {key: normalize.RunningStats() for key in keys}

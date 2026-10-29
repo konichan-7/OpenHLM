@@ -1,5 +1,4 @@
 import dataclasses
-import enum
 import logging
 import socket
 
@@ -11,38 +10,19 @@ from openpi.serving import websocket_policy_server
 from openpi.training import config as _config
 
 
-class EnvMode(enum.Enum):
-    """Supported environments."""
-
-    ALOHA = "aloha"
-    ALOHA_SIM = "aloha_sim"
-    DROID = "droid"
-    LIBERO = "libero"
-    TWIST2G1 = "twist2_g1"
-    SONICG1 = "sonic_g1"
-
-
 @dataclasses.dataclass
 class Checkpoint:
     """Load a policy from a trained checkpoint."""
 
-    # Training config name (e.g., "pi0_aloha_sim").
+    # Training config name (e.g., "pi05_simple_g1_dex3_tabletop").
     config: str
-    # Checkpoint directory (e.g., "checkpoints/pi0_aloha_sim/exp/10000").
+    # Checkpoint directory (e.g., "checkpoints/pi05_simple_g1_dex3_tabletop/run1/3000").
     dir: str
-
-
-@dataclasses.dataclass
-class Default:
-    """Use the default policy for the given environment."""
 
 
 @dataclasses.dataclass
 class Args:
     """Arguments for the serve_policy script."""
-
-    # Environment to serve the policy for. This is only used when serving default policies.
-    env: EnvMode = EnvMode.ALOHA_SIM
 
     # If provided, will be used in case the "prompt" key is not present in the data, or if the model doesn't have a default
     # prompt.
@@ -53,8 +33,8 @@ class Args:
     # Record the policy's behavior for debugging.
     record: bool = False
 
-    # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
-    policy: Checkpoint | Default = dataclasses.field(default_factory=Default)
+    # Supply policy:checkpoint with the G1 training config and checkpoint directory.
+    policy: Checkpoint | None = None
 
     # Number of sampling steps for action generation.
     num_steps: int = 10
@@ -63,53 +43,19 @@ class Args:
     debug: bool = False
 
 
-# Default checkpoints that should be used for each environment.
-DEFAULT_CHECKPOINT: dict[EnvMode, Checkpoint] = {
-    EnvMode.ALOHA: Checkpoint(
-        config="pi05_aloha",
-        dir="gs://openpi-assets/checkpoints/pi05_base",
-    ),
-    EnvMode.ALOHA_SIM: Checkpoint(
-        config="pi0_aloha_sim",
-        dir="gs://openpi-assets/checkpoints/pi0_aloha_sim",
-    ),
-    EnvMode.DROID: Checkpoint(
-        config="pi05_droid",
-        dir="gs://openpi-assets/checkpoints/pi05_droid",
-    ),
-    EnvMode.LIBERO: Checkpoint(
-        config="pi05_libero",
-        dir="gs://openpi-assets/checkpoints/pi05_libero",
-    ),
-    EnvMode.TWIST2G1: Checkpoint(
-        config="pi05_g1",
-        dir="checkpoints/pi05_g1",
-    ),
-    EnvMode.SONICG1: Checkpoint(
-        config="pi05_g1_pick_sprite_turnback",
-        dir="checkpoints/pi05_g1_pick_sprite/g1_pick_sprite_bs64/20000",
-    ),
-}
-
-
-def create_default_policy(env: EnvMode, *, default_prompt: str | None = None, num_steps: int = 10) -> _policy.Policy:
-    """Create a default policy for the given environment."""
-    if checkpoint := DEFAULT_CHECKPOINT.get(env):
-        return _policy_config.create_trained_policy(
-             _config.get_config(checkpoint.config), checkpoint.dir, default_prompt=default_prompt, sample_kwargs={"num_steps": num_steps}
-        )
-    raise ValueError(f"Unsupported environment mode: {env}")
-
-
 def create_policy(args: Args) -> _policy.Policy:
-    """Create a policy from the given arguments."""
-    match args.policy:
-        case Checkpoint():
-            return _policy_config.create_trained_policy(
-                _config.get_config(args.policy.config), args.policy.dir, default_prompt=args.default_prompt, sample_kwargs={"num_steps": args.num_steps}
-            )
-        case Default():
-            return create_default_policy(args.env, default_prompt=args.default_prompt, num_steps=args.num_steps)
+    """Load an explicitly selected G1 Dex3 checkpoint."""
+    if args.policy is None:
+        raise ValueError(
+            "Specify policy:checkpoint --policy.config pi05_simple_g1_dex3_tabletop "
+            "--policy.dir <checkpoint-directory>"
+        )
+    return _policy_config.create_trained_policy(
+        _config.get_config(args.policy.config),
+        args.policy.dir,
+        default_prompt=args.default_prompt,
+        sample_kwargs={"num_steps": args.num_steps},
+    )
 
 
 def main(args: Args) -> None:

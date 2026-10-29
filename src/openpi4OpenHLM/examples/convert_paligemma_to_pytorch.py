@@ -12,7 +12,7 @@ Usage:
 Example:
     # Convert PaliGemma checkpoint to PyTorch
     python examples/convert_paligemma_to_pytorch.py \
-        --config_name pi05_aloha \
+        --config_name pi05_simple_g1_dex3_tabletop \
         --output_path /home/$USER/.cache/openpi/openpi-assets/checkpoints/paligemma_pytorch
 """
 
