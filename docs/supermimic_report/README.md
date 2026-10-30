@@ -6,6 +6,7 @@
 
 - `main.tex` / `sections/`：完整中文 LaTeX 报告；使用 CTeX、Fandol、数学公式、矢量框架图、源码行号链接和对齐矩阵。
 - `references.bib`：论文与固定版本仓库引用；论文元数据来自 Zotero，省略本地附件路径。
+- `FIGURES.md` / `figure_sources.json` / `fetch_paper_figures.py`：论文原图2-5的arXiv来源、固定版本校验和、矢量裁切范围和重建脚本。生成的四张矢量PDF置于 `figures/`，不纳入Git，交付ZIP包含这些图片。
 - `EVIDENCE.md` / `source_manifest.json`：来源、校验和与验证边界。
 - `verify_alignment.py`：16项 CPU 验证，依赖 `torch` 与 `numpy`；显式绕过未安装 Isaac Lab 的运动学导入，不验证 FK/物理。
 
@@ -13,7 +14,7 @@ PDF 放在仓库根目录下的 `output/pdf/supermimic_paper_code_alignment_repo
 
 ## 编译
 
-需要带中文支持的 XeLaTeX + BibTeX，或可联网获取 TeX bundle 的 Tectonic。可使用 Codex 内置 LaTeX 编辑器打开此目录。标准命令：
+需要带中文支持的 XeLaTeX + BibTeX，或可联网获取 TeX bundle 的 Tectonic。从Git重建时先安装 `pypdf` 与Poppler，并执行 `python fetch_paper_figures.py` 获取四张原图；交付ZIP已包含图片，无需重新下载。可使用 Codex 内置 LaTeX 编辑器打开此目录。标准命令：
 
 ```sh
 cd /absolute/path/to/OpenHLM/docs/supermimic_report
@@ -38,8 +39,10 @@ python /absolute/path/to/OpenHLM/docs/supermimic_report/verify_alignment.py /abs
 
 ## 文档验收
 
-- PDF共24页；已用Poppler将全部页面渲染并逐页检查，另对框架图、公式页、对齐矩阵、参数表和伪代码页做放大检查。
+- PDF共26页，包含论文原图2、3、4、5及原有代码数据流图；已用Poppler将全部页面渲染并逐页检查，另对原论文图、框架图、公式页、对齐矩阵、参数表和伪代码页做放大检查。
 - 编译无错误、无overfull/underfull box、无缺失字形或未解析引用；保留的字体script提示与禁用shell-escape提示不影响输出。
 - PDF结构检查：文本可检索、无页外文字、无异常空白页，包含目录/书签及源码超链接。
 - 111处源码行号定位全部通过固定版本文件长度核验；32个上游文本/脚本文件校验和与来源清单一致。
 - 相关检查通过后运行 `git diff --check`；源文件和验证材料分单元提交，PDF、ZIP和临时QA图片不纳入Git。
+
+原图引用说明：本次从arXiv下载的v1 PDF与之前Zotero全文校验和相同。所有原图保留矢量线条、图内文字、坐标轴与图例；图注明确原论文图号/页码/引用，正文说明其与代码的关系，不将原论文实验曲线视为本次或非官方仓库的实测结果。

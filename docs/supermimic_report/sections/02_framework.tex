@@ -1,6 +1,15 @@
 \section{系统框架：两个前向世界，一条策略梯度链}\label{sec:framework}
 \paper{第3.1节、图2、附录D算法A.1（第4、15页）}
 \subsection{三阶段训练循环}
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/paper_fig2_training_loop.pdf}
+\caption{论文原图2：SuperMimic 的训练循环。引用自 Liao 等（2026）图2，第4页\cite{liao_supermimic_2026}，从 arXiv:2610.28480v1 的 PDF 矢量裁切，保留原图内文字与符号。图内虚线表示梯度；雪花/火焰图标分别表示参数冻结/更新。}
+\label{fig:paper-training-loop}
+\end{figure}
+
+论文原图2在本报告图\ref{fig:paper-training-loop}中直接引用。左栏对应真实仿真数据收集，中栏对应8步窗口拟合，右栏对应在固定模型内优化策略；原图未单独画出 critic 网络，但其图注说明了末端价值 bootstrap。下面的本报告图\ref{fig:code-loop}是\textbf{为解释当前代码而绘制的补充图}，显式加入 critic 与目标构造，不应与论文原图混为同一张图。
+
 \begin{figure}[htbp]
 \centering
 \begin{tikzpicture}[font=\small,node distance=8mm and 8mm,box/.style={draw=tealblue,rounded corners,fill=pale,align=center,text width=43mm,minimum height=17mm},arr/.style={-{Latex[length=2mm]},thick,draw=navy}]
@@ -19,7 +28,8 @@
 \draw[arr] (actor)--(sim);
 \draw[arr,dashed] (critic.north west)--node[above,sloped,font=\scriptsize]{终端价值}(imag.north east);
 \end{tikzpicture}
-\caption{根据论文图2与固定版本代码重新绘制的训练数据流。虚线表示价值 bootstrap 的依赖，不表示对仿真器求导。}
+\caption{本报告绘制的代码数据流图，非论文原图。根据论文图2与固定版本源码补充 critic 路径。此图虚线表示价值 bootstrap 的依赖，不表示对仿真器求导；这与上方论文原图的虚线含义不同。}
+\label{fig:code-loop}
 \end{figure}
 
 \textbf{阶段一：Collect。} 当前策略依据带噪观测与未来动作目标输出29维动作。采样时加入标准差0.1的高斯噪声，执行后的动作写入缓存。仿真器产生下一状态，解析 MDP 代码为其计算回报和终止标签。旧策略产生的数据仍可用于动力学监督，因为物理转移不因“谁采样了它”而改变。

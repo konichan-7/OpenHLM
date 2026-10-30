@@ -51,3 +51,7 @@ Not run: Isaac Lab/Newton/MuJoCo-Warp simulation, asset FK matching, CUDA/bf16/t
 - `wm_err8` uses adaptive output-standardization and component floors, not a proven match to the paper's Fig. 3(c) nominal-error normalization.
 - Resume restores networks/optimizers/counters but not replay, sampling statistics, simulation state or RNG; it is not bitwise continuation.
 - Training wall time begins after initialization and warmup collection; build/data/evaluation are excluded. Timing boundaries and hardware differ from the paper.
+
+## Original-paper figures added
+
+The versioned arXiv source bundle and PDF were downloaded on 2026-10-30. The arXiv PDF SHA-256 exactly matches the Zotero attachment recorded above. Original figures 2-5 are reproduced as vector-only crops (except the original small icons in Fig. 2), with explicit Chinese attribution and separate code-alignment discussion. The original figures are native TikZ/PGFPlots in the source package; no curves or experimental measurements were reconstructed. `figure_sources.json` records exact pages/boxes/source checksums. `fetch_paper_figures.py` verifies source hash, output sizes, visible labels and absence of outside captions/body text; the wrong-hash negative check passed. Original source PDFs and generated figure assets are not committed. The self-contained LaTeX ZIP contains the four required assets.

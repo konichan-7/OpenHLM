@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fetch and vector-crop four cited figures from the pinned arXiv paper.
 
-Requires pypdf and Poppler's pdftocairo/pdfinfo. Generated assets are ignored by
+Requires pypdf and Poppler's pdftocairo. Generated assets are ignored by
 Git but should be included in a self-contained LaTeX delivery archive. No paper
 TeX is executed. Original figure content is not replotted or rasterized.
 """

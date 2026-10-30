@@ -20,8 +20,27 @@
 \end{align}
 前者每个 clip 等权，后者每个参考转移等权，长 clip 权重更高。论文附录F.1明确了首帧、摩擦、无噪声与失败判据，但没有在该处完全展开这两种聚合的选择。仓库自报数字应按它实际写入的 \code{norm_return} 理解；不能在不同汇总分母下直接宣布严格复现同一曲线。
 
+\subsection{论文原图：规模扩展与 LAFAN1 对照}
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/paper_fig3_scaling.pdf}
+\caption{论文原图3：跟踪回报、训练成本与数据规模。引用自 Liao 等（2026）图3，第7页\cite{liao_supermimic_2026}，从 arXiv:2610.28480v1 的 PDF 矢量裁切。原图(a)比较 SONIC 与 SuperMimic 的 GPU-hours；(b,c)展示1至264小时动作库的成本与8步预测误差。保留原坐标轴、图例与预算标记；不是40段 LAFAN1 仓库的训练曲线。}
+\label{fig:paper-scaling}
+\end{figure}
+
+图\ref{fig:paper-scaling}(a)的主要基准是129,514段 BONES-SEED 动作；(b,c)刻画同一机器人动力学在不同数据覆盖下的扩展行为。它支持“一个模型可共享于很多动作”的论文动机，但当前代码没有提供这一数据扩展实验的完整复现链路。特别是(c)的 nominal-error 归一化与代码 \code{wm_err8} 的自适应标准化不能直接视为同一标尺，硬件与训练数据规模的差异也应一并保留。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/paper_fig4_controlled.pdf}
+\caption{论文原图4：LAFAN1 受控比较与 critic/horizon 消融。引用自 Liao 等（2026）图4，第7页\cite{liao_supermimic_2026}，从 arXiv:2610.28480v1 的 PDF 矢量裁切。所有子图使用40段、约2.45小时的 LAFAN1 动作；(a)是 checkpoint 在完整动作库上的评估回报，(b,c)使用训练回报。阴影标出默认 $H=32$，叉号表示未达目标。}
+\label{fig:paper-controlled}
+\end{figure}
+
+图\ref{fig:paper-controlled}(a)才是该仓库 README 声明的直接对照目标；(b,c)则解释了默认 \code{--horizon 32} 及末端 critic 的设计背景。代码提供 \code{--no_critic} 和可配置 horizon，但这不等于已交付完整消融结果。还需注意：训练 episode 采用基于回报的重置分布，而(a)从每个 clip 首帧评估，所以\textbf{不能把(b,c)的训练回报数值与(a)的评估分数逐点等同}。图中成绩均归原论文，仓库作者记录另在下表单独列出。
+
 \subsection{三个层次的成绩不应混在一张结论里}
-\begin{table}[htbp]
+\begin{table}[H]
 \centering\small
 \noindent\begin{tabularx}{\textwidth}{@{}P{30mm}P{40mm}Y@{}}
 \toprule

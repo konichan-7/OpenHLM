@@ -52,8 +52,8 @@ for iteration in schedule:
 \end{lstlisting}
 
 \section{复用报告源文件与验证记录}
-LaTeX 工程由 \code{main.tex}、\code{sections/}、\code{references.bib} 构成。使用支持中文的 XeLaTeX/BibTeX，或 Tectonic 编译；工程采用CTeX自带Fandol字库，未依赖机器私有字体，也未将论文页面或演示图当作生成的实验结果。
+LaTeX 工程由 \code{main.tex}、\code{sections/}、\code{references.bib} 构成。使用支持中文的 XeLaTeX/BibTeX，或 Tectonic 编译；工程采用CTeX自带Fandol字库，未依赖机器私有字体，引用的论文原图来自同版本 arXiv PDF，按中文图注逐一归属原作者，不把它们当作本次生成的实验结果。
 
-\code{EVIDENCE.md} 记录来源、已执行验证与未验证范围；\code{source_manifest.json} 固定上游文件校验和及PDF校验和；\code{verify_alignment.py} 在外部固定提交的源码目录上运行。编译产生的PDF、日志和图像不属于算法源码，不应混入训练项目提交。
+\code{EVIDENCE.md} 记录来源、已执行验证与未验证范围；\code{source_manifest.json} 固定上游文件校验和及PDF校验和；\code{verify_alignment.py} 在外部固定提交的源码目录上运行。\code{figure_sources.json} 和 \code{FIGURES.md} 记录原图编号、页码、裁切坐标、校验和及引用方式；\code{fetch_paper_figures.py} 可重建四张矢量图片。编译产生的报告PDF、图片资产和日志不提交到Git，交付的源码ZIP则包含编译所需图片。
 
 本报告引用少量源码标识和结构，代码来源为MIT许可的非官方仓库，仓库署名 Chong Zhang。数据与机器人资产有独立许可，代码MIT许可不等于数据可自由再分发。本文未向 Zotero 导入新条目、修改原条目或分发动作数据、模型checkpoint与原论文PDF。

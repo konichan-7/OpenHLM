@@ -43,6 +43,15 @@ MLP 数值精度 & bf16 autocast & 不同于论文TF32设定；状态与解析�
 \source{\src{supermimic/train.py}{275}{283}；\src{supermimic/train.py}{300}{321}；\src{supermimic/networks.py}{24}{51}}
 
 \subsection{加速策略与其可比性边界}
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/paper_fig5_efficiency.pdf}
+\caption{论文原图5：想象 rollout 的吞吐与解析梯度的样本效率。引用自 Liao 等（2026）图5，第8页\cite{liao_supermimic_2026}，从 arXiv:2610.28480v1 的 PDF 矢量裁切。左图为 H100/TF32 条件下的世界模型与 MuJoCo Warp 吞吐；右图为 SuperMimic 与 PPO-WM 的想象步数对比。两者均是原论文结果，非当前仓库或本次报告的实测。}
+\label{fig:paper-efficiency}
+\end{figure}
+
+图\ref{fig:paper-efficiency}(a)讨论\textbf{每秒能产生多少转移}，而(b)讨论\textbf{达到相近回报需要多少想象步}：快速模型与有效梯度是两种不同机制。右图的 PPO-WM 已在同类世界模型内采样，但仍用 PPO 更新，因此不能把图中约64倍的步数差直接解释为仿真引擎加速。对应当前代码，\code{wm.step()} 提供快速可微转移，\code{policy_update()} 则通过模型求回报梯度；仓库没有随附该 PPO-WM 对照的完整训练实现和结果，不能据此宣称已经重做此消融。
+
 \code{torch.compile} 编译世界模型 rollout、误差、想象单步、回报/终止与 critic 输入构造；代码还先堆叠所有想象状态，再批量做 FK 与奖励，减少 Python 调度和小批操作开销。MLP 矩阵乘法用 bf16 autocast，输出转换回 fp32；状态积分、FK和奖励继续使用fp32。训练脚本同时允许TF32，但 bf16 路径不能因此被描述为“严格使用论文的TF32”。
 
 README 自报 bf16 在作者机器上快约24\%，这不是本次跨硬件测量结果。依赖的 GPU 架构、CUDA、PyTorch编译和 solver 都会改变吞吐；没有同环境基准，不应把差异全部归因于算法。
