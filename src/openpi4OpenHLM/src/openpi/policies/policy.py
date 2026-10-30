@@ -68,7 +68,22 @@ class Policy(BasePolicy):
     def infer(self, obs: dict, *, noise: np.ndarray | None = None, **kwargs) -> dict:  # type: ignore[misc]
         # Make a copy since transformations may modify the inputs in place.
         inputs = jax.tree.map(lambda x: x, obs)
+        has_action_prefix = "action_prefix" in kwargs
+        raw_action_prefix = kwargs.pop("action_prefix", None)
+        if has_action_prefix and raw_action_prefix is not None:
+            if "actions" in inputs:
+                raise ValueError("observation already contains 'actions'; cannot also transform an RTC action_prefix")
+            # Run the prefix through the exact data and normalization transforms
+            # used for training.  SIMPLE sends physical (unnormalized) actions,
+            # while PI0Pytorch expects its prefix in normalized model space.
+            inputs["actions"] = np.asarray(raw_action_prefix)
         inputs = self._input_transform(inputs)
+        action_prefix = None
+        if has_action_prefix and raw_action_prefix is not None:
+            try:
+                action_prefix = inputs.pop("actions")
+            except KeyError as exc:
+                raise ValueError("policy input transforms dropped the RTC action_prefix") from exc
         if not self._is_pytorch_model:
             # Make a batch and convert to jax.Array.
             inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], inputs)
@@ -95,8 +110,7 @@ class Policy(BasePolicy):
             rtc_kwargs["inference_delay"] = kwargs.pop("inference_delay")
         if "execution_horizon" in kwargs:
             rtc_kwargs["execution_horizon"] = kwargs.pop("execution_horizon")
-        if "action_prefix" in kwargs:
-            action_prefix = kwargs.pop("action_prefix")
+        if has_action_prefix:
             if action_prefix is not None:
                 if self._is_pytorch_model:
                     action_prefix = torch.from_numpy(np.array(action_prefix)).float().to(self._pytorch_device)

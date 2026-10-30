@@ -33,7 +33,9 @@ class Pi0Config(_model.BaseModelConfig):
     discrete_state_input: bool = None  # type: ignore
     # Timestep distribution for flow matching: "shifted_beta" (default) or "uniform"
     timestep_distribution: str = "shifted_beta"
-    # Training-time RTC (only used when pi05=True)
+    # Training-time RTC (PyTorch, pi05 only): the first d action steps of each training chunk are given as clean
+    # actions (timestep 0), with d ~ Uniform{0, ..., rtc_max_delay}. At inference, pass `action_prefix` and
+    # `inference_delay <= rtc_max_delay` to `sample_actions`.
     use_training_time_rtc: bool = False
     rtc_max_delay: int = 10
     # If true, mask loss to only compute on postfix positions during training-time RTC
