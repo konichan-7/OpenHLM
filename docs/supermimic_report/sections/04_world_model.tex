@@ -1,0 +1,68 @@
+\section{世界模型：从论文式(1)到实际误差函数}\label{sec:wm}
+\paper{第3.2节、式(1)（第5页）；表A.4、A.5（第15--16页）}
+\subsection{动力学与解析辅助头的职责划分}
+论文允许世界模型的奖励、观测、终止头既可以学习，也可以解析计算。仓库选择只学习
+\begin{equation}
+ \hat S_{t+1}=f_\omega(\hat S_t,a_t,\xi),
+\end{equation}
+其余由 \code{MDP} 和参考动作库计算：回报依赖预测状态、当前/上一动作与参考帧；观测依赖预测状态、上一动作、零位偏差及参考根朝向；终止依赖预测状态与参考帧。因而没有独立 reward/observation/termination 网络，也没有这些头的 MSE 或 BCE 监督项。\textbf{这不是漏写论文式(1)的损失}，而是论文明确许可的解析头分支。
+
+模型输入不包含参考动作，说明它拟合的是统一机器人动力学，而不是“第几段动作的下一姿态”。$\xi$ 中的摩擦、标定与质心参数使同一确定性网络可以条件化于不同物理系统；传感器噪声由外部采样，不要求网络把噪声本身当成不可预测动力学。
+
+\subsection{局部特征、网络与状态积分}
+令 $H=\heading(R)$，输入的 heading/xy 不变特征为
+\begin{equation}
+ \phi(S)=\big[p_z,\six(H^\top R),R^\top v,R^\top\omega,q,\dot q\big]\in\R^{71}.
+\end{equation}
+它移除全局xy位置和 yaw，保留高度、倾斜、机体系速度及关节状态。上下文先按固定量纲归一化：$(\mu-0.75)/0.45$、$\Delta q^0/0.01$、$\Delta c/0.05$；再将 $[\phi(S),a,\xi_n]$ 送入在线 \code{RunningNorm}。
+
+动力学网络隐藏宽度为 $(2048,2048,2048)$，每个隐藏层采用 Linear、LayerNorm、SiLU，输出70维标准化局部增量。输出经运行均值和标准差反标准化后拆为
+\begin{equation}
+ \Delta=(\Delta p_h,\Delta\vartheta_b,\Delta v_b,\Delta\omega_b,\Delta q,\Delta\dot q).
+\end{equation}
+其积分规则是
+\begin{align}
+ p'&=p+H\Delta p_h,& R'&=R\exp([\Delta\vartheta_b]_\times),\\
+ v'&=v+R\Delta v_b,&\omega'&=\omega+R\Delta\omega_b,\\
+ q'&=q+\Delta q,&\dot q'&=\dot q+\Delta\dot q.
+\end{align}
+位移用 yaw 坐标系增量，速度与旋转增量用根机体系；不能把整个70维输出都称为同一局部坐标系。使用 $SO(3)$ 指数映射避免直接加旋转矩阵元素导致的明显非正交问题。
+
+最后线性层权重和偏置初始化为零。但由于输出还要反标准化，运行均值更新后，零网络输出表示\textbf{平均增量}，并非始终严格的恒等转移。上述特征、LayerNorm、激活函数与初始化是代码实现选择；论文表A.4只规定了主要隐藏层宽度，未逐项给出这些细节。
+\source{\src{supermimic/mdp.py}{63}{81}；\src{supermimic/mdp.py}{183}{184}；\src{supermimic/networks.py}{12}{21}；\src{supermimic/networks.py}{67}{113}}
+
+\subsection{多步自回归训练与真实损失}
+论文的抽象损失为
+\begin{equation}
+ \mathcal L_{\rm WM}=\E_{\mathcal B}\sum_{j=1}^{k}\Big[
+ \|\hat s_j-s_j\|^2+(\hat r_j-r_j)^2+
+ \|\hat{\bar o}_j-\bar o_j\|^2+\operatorname{BCE}(\hat d_j,d_j)\Big],
+\end{equation}
+解析头对应的项不参与学习。代码的具体操作为
+\begin{equation}
+ \hat S_0=S_0,\qquad
+ \hat S_{j+1}=f_\omega(\hat S_j,a_j^{\rm logged},\xi_j),\quad j=0,\ldots,7.
+\end{equation}
+注意除了第一帧，\textbf{后续不再用真实 $S_j$ 覆盖预测}。这才是自回归窗口拟合，与把8个独立单步样本打包训练不同。
+
+误差向量也不是71维平铺状态直接相减，而是70维局部几何误差：
+\begin{equation}
+ e(\hat S,S)=\left[H^\top(\hat p-p),\log(R^\top\hat R)^\vee,
+ R^\top(\hat v-v),R^\top(\hat\omega-\omega),\hat q-q,\hat{\dot q}-\dot q\right].
+\end{equation}
+令 $\sigma_\ell$ 为真实单步增量的运行标准差，$\epsilon_\ell$ 为分量下界，则\emph{实际用于反向传播}的损失为
+\begin{equation}\label{eq:actualwm}
+ L_{\rm code}=\frac1B\sum_{b=1}^{B}\sum_{j=1}^{8}m_{bj}
+ \frac1{70}\sum_{\ell=1}^{70}
+ \left[\frac{e_\ell(\hat S_{bj},S_{bj})}{\max(\sigma_\ell,\epsilon_\ell)}\right]^2.
+\end{equation}
+六类分量下界分别是 $0.003,0.005,0.02,0.05,0.003,0.05$，对应位置、旋转、线速度、角速度、关节角、关节速度。$m_{bj}$ 在窗口越过 episode 边界后变0。
+
+这里有三个容易忽略的实现差别：一是按维度标准化后的误差，而不是无量纲处理前的欧氏和；二是按 batch 数 $B$ 除，不按有效时间步数除，所以短有效窗口的贡献更少；三是日志 \code{wm_loss} 再除窗口长度8，但反向传播用的是式\eqref{eq:actualwm}，不能用日志数值直接重建优化尺度。
+此外，日志 \code{wm_err8} 是窗口最后一步在有效样本上的标准化状态误差平均；论文图3(c)则按预定义的 nominal error 归一化。现有材料不足以认定两者使用同一误差标度，不能只看日志数值接近就宣布模型精度复现。
+\source{\src{supermimic/train.py}{90}{108}；\src{supermimic/train.py}{147}{156}；\src{supermimic/networks.py}{115}{134}}
+
+\subsection{为什么这能提供梯度，以及不能保证什么}
+在 actor 阶段，冻结 $\omega$ 不妨碍计算 $\partial f_\omega/\partial S$ 与 $\partial f_\omega/\partial a$；这些雅可比构成策略 BPTT 的关键链路。8步监督鼓励网络处理自身滚动误差，32步想象则提出更长预测要求。\textbf{8步拟合好并不在数学上保证32步梯度准确，更不能推出无限长稳定性}；论文对长 rollout 稳定性的叙述属于其实验观察，代码与本次 CPU 检查不构成同样证据。
+
+此外，预测误差小不等价于状态/动作雅可比精确，策略仍可能利用模型偏差。短 horizon、critic、持续在线仿真采样和多步拟合有助于降低这些风险，但这里没有模型集成、不确定性惩罚或显式信赖域，不能擅自补充为“论文里隐含实现了这些机制”。

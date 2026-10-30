@@ -1,0 +1,84 @@
+\section{策略与价值学习：论文式(2)、式(3)的梯度实现}\label{sec:actor}
+\paper{第3.3节、式(2)--(3)（第5页），附录B--D（第14--16页）}
+\subsection{策略网络并不是直接做行为克隆}
+策略采用参考编码器加观测解码器：
+\begin{align}
+ z_t&=\tanh\big(\operatorname{enc}_\theta(N_g(g_t))\big)\in[-1,1]^{32},\\
+ a_t&=\operatorname{dec}_\theta\big(z_t,\operatorname{flat}(N_o(o_{t-9:t}))\big).
+\end{align}
+编码器与解码器隐藏宽度均为 $(2048,1024,512,256)$，默认激活为 ELU；输出层为线性层。解码器最后一层初始权重再乘0.01、偏置置零，以减小初始动作。输入归一化的均值/方差作为 module buffer 保存在 checkpoint 中，而非学习参数。
+
+虽然目标来自参考动作，策略损失里没有 $\|a-a^{\rm ref}\|^2$ 或参考动作的最大似然项。参考定义的是未来目标和跟踪奖励；动作通过模型产生状态、状态再产生回报，策略因此通过控制优化学习，而不是直接复制一个给定的电机动作标签。
+\source{\src{supermimic/networks.py}{137}{165}；\src{supermimic/train.py}{76}{81}}
+
+\subsection{想象轨迹的初始化与逐步推进}
+\code{sample_valid_starts()} 从 replay 抽起点及其真实历史，并拒绝不够剩余参考帧数的候选，要求 $f+H\le f_{\rm end}$。这避免32步想象越过 clip 尾部。起始状态来自数据、无需梯度；历史则从缓存的状态、上一动作、上下文和帧号重新构造无噪观测，再重新加传感器噪声，而非保存并重用当时的每一次噪声样本。
+
+每个想象步实际顺序为
+\begin{enumerate}
+\item 用当前历史 $o_{t-9:t}$ 与目标 $g_t$ 计算 $a_t$；
+\item 用固定世界模型求 $\hat S_{t+1}$，参考索引推进为 $f+1$；
+\item 在新状态上构造观测并加入噪声，将历史向前滚动；
+\item 查询新参考索引的未来10帧目标，供下一步动作使用；
+\item 最终批量计算 $r_{t+1}=r(\hat S_{t+1},f+1,a_t,a_{t-1})$ 与软终止。
+\end{enumerate}
+这一时序使 \code{As} 保存的是 $a_t$、\code{Ss} 保存的是 $S_{t+1}$、\code{Aps} 保存的是旧 $a_{t-1}$。如果把奖励错误地对齐到旧状态或旧参考帧，虽然形状可能一致，算法语义已不相同。
+\source{\src{supermimic/train.py}{111}{125}；\src{supermimic/train.py}{159}{169}；\src{supermimic/train.py}{175}{200}}
+
+\subsection{软终止、存活权重与有限时域目标}
+代码没有学习 termination probability，而是把硬阈值平滑化：
+\begin{equation}
+ \hat d_{t+1}=1-
+ \left[1-\sigma\!\left(\frac{e_z-0.25}{0.02}\right)\right]
+ \left[1-\sigma\!\left(\frac{e_{\rm tilt}-0.8}{0.04}\right)\right].
+\end{equation}
+两个分母是实现选择，原论文未规定这些温度。该构造令接近失败边界的状态已经有生存折损，同时允许存活概率对状态求导。
+
+定义 $\hat c_0=1$，$\hat c_{t+1}=\hat c_t(1-\hat d_{t+1})$，则 actor 最大化
+\begin{equation}\label{eq:actor}
+ \hat J(\theta)=\E\left[\sum_{t=0}^{H-1}\gamma^t\hat c_t\hat r_{t+1}
+ +\gamma^H\hat c_H V_\psi(\hat S_H,g_H,\xi)\right],\quad H=32.
+\end{equation}
+代码先以 \code{cumprod(1-d,0)} 得到 $c_{t+1}$，再在前面补一行全1并去掉最后一行，得到乘奖励的 $c_t$。因此触发终止的那个转移的即时奖励仍按“进入该步之前的存活权重”计算；不能直接把 $c_{t+1}$ 乘到同一个 $r_{t+1}$，否则与论文式(2)不同。
+
+32步对应0.64秒物理时间。末端 critic 估计更远未来的价值，避免必须完整反传数秒到数分钟的动作。\code{--no_critic} 会去掉该 bootstrap 与后续价值训练，可用于对比有限时域目标，但仓库没有提供论文全部 horizon 消融结果。
+\source{\src{supermimic/mdp.py}{154}{161}；\src{supermimic/train.py}{199}{210}}
+
+\subsection{“冻结参数”不等于“切断梯度”}
+代码先对 world model 和 critic 参数调用 \code{requires_grad_(False)}，再正常执行其前向；对 actor 损失调用 \code{backward()} 后，只更新策略。它没有把整个想象过程放进 \code{torch.no_grad()}，也没有逐步 \code{detach()} 预测状态。因此保留了
+\begin{equation}
+ \theta\longrightarrow a_t\longrightarrow\hat S_{t+1}
+ \longrightarrow\{\hat r_{t+1},\hat d_{t+1},o_{t+1},a_{t+1},V_H\}
+ \longrightarrow\hat J
+\end{equation}
+这条链路。末端 $V_H$ 虽然参数冻结，其\textbf{输入梯度}仍会通过 $S_H$ 回到 actor；这不是把一个常数 baseline 加到目标中。
+
+用 $x_t$ 表示包含预测状态与可微观测历史的扩展状态，则链式法则具有
+\begin{equation}
+ \frac{\dd x_{t+1}}{\dd\theta}=
+ \frac{\partial F}{\partial x_t}\frac{\dd x_t}{\dd\theta}
+ +\frac{\partial F}{\partial a_t}
+ \left(\frac{\partial\pi_\theta}{\partial\theta}
+ +\frac{\partial\pi_\theta}{\partial x_t}\frac{\dd x_t}{\dd\theta}\right)
+\end{equation}
+的结构。参考帧索引与抽样噪声不对策略参数求导；给定噪声样本，观测加噪操作仍保留对预测状态的导数。actor 优化的是\textbf{模型中有限样本回报的解析梯度}，不是对真实仿真系统回报的无偏梯度保证。
+
+\begin{caution}{不要用 PPO 的术语误读这段实现}
+这里没有随机动作分布的 log-prob、old policy 概率比、clipped surrogate 或 entropy bonus。缓存虽是离策略数据，但 actor 用当前策略在模型内重新 rollout。GAE 在这里用于 critic 的想象回报目标，不意味着 actor 在做 PPO。
+\end{caution}
+
+策略最小化 $-\hat J$；反向后先全局范数裁剪至1.0，再逐元素裁剪至0.1。代码先检查裁剪前返回的范数是否有限，只有有限时才执行 actor optimizer step。世界模型和 critic 参数随后恢复可训练状态。
+\source{\src{supermimic/train.py}{185}{222}}
+
+\subsection{critic 输入与固定的 \texorpdfstring{$\lambda$}{lambda}-return 目标}
+critic 隐藏层是 $(256,128)$，输入包含71维不变状态特征、29维参考关节角误差、14个身体的位置误差42维、根位置误差3维、相对根朝向6维、上下文33维，以及730维目标，总计914维。这些特征在想象状态上解析计算，不是 actor 同款的990维噪声历史。
+
+actor rollout 后，用 \code{no_grad()} 与 \code{detach()} 形成固定的 $H+1$ 个 critic 输入状态，更新 critic 的归一化统计，计算旧 $V_0,\ldots,V_H$。从 $\hat R_H=V_H$ 开始倒序递推
+\begin{equation}\label{eq:lambda}
+ \hat R_t=\hat r_{t+1}+\gamma(1-\hat d_{t+1})
+ \big[(1-\lambda)V_{t+1}+\lambda\hat R_{t+1}\big],\qquad\lambda=0.95.
+\end{equation}
+固定这组 $\hat R_t$，最小化均方误差 $\E[(V_\psi(x_t)-\hat R_t)^2]$。所有 $H\times B=131,072$ 个时间批样本展平，每轮打乱后分4批，训练5轮，共20次 critic 参数更新。actor 使用的 bootstrap 值来自这轮 critic 更新\emph{之前}。
+
+“固定世界模型”与“固定 critic targets”是两层不同的 stop-gradient：前者冻结动力学权重而允许状态梯度；后者对价值目标及采集的想象特征断开图，避免 critic 拟合再次改变 actor 或世界模型。代码没有单独 target critic 或 Polyak 网络。
+\source{\src{supermimic/mdp.py}{163}{180}；\src{supermimic/train.py}{223}{252}}

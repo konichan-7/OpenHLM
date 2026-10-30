@@ -1,0 +1,50 @@
+\section{经验回放与重置采样：训练分布如何形成}
+\paper{第3.1节，附录D.1（第4、15页）}
+\subsection{环形缓存存了什么，没存什么}
+\code{ReplayBuffer} 按 $(T,N)$ 布局直接存 GPU 张量，默认 $T=1000,N=4096$。每个转移包括 \code{s,s1,a,a_prev,xi,r,f,ep_step,done}。存储的动作是\textbf{实际执行的加噪动作}，不是策略加噪前的均值。否则模型输入与仿真产生的转移不对应，监督将出现系统性错配。
+
+字段 \code{done} 是硬失败、10秒超时或 clip 结束的并集。\code{TrackingSim.step()} 虽还返回 \code{term} 与分项回报，但 \code{FIELDS} 不保存它们。由于辅助头解析计算，模型拟合不需要缓存 \code{term} 的 BCE 标签；\code{done} 在这里主要是序列边界。
+
+每个转移的主存储约为
+\begin{equation}
+ (71+71+29+29+33+1)\times4+8+4+1=949\ \text{bytes},
+\end{equation}
+因此默认缓存主张量约 $3.89\times10^9$ bytes，即3.62 GiB，不含网络、优化器、临时窗口、想象计算图与仿真器开销。这是由字段形状估算的主张量容量，\textbf{不是实测训练峰值显存}。
+\source{\src{supermimic/buffer.py}{9}{39}；\src{supermimic/env.py}{203}{213}}
+
+\subsection{窗口掩码与历史恢复的两种边界处理}
+模型窗口先按时间和环境抽取连续转移，再设置
+\begin{equation}
+ m_j=\prod_{i=0}^{j-1}(1-\mathrm{done}_i),\qquad m_0=1.
+\end{equation}
+如果窗口第2个转移结束 episode，mask 为 $[1,1,0,\ldots]$；终止转移本身仍可学习，reset 后的另一段 episode 不与前一段拼接拟合。存下来的 $s_1$ 是 reset \emph{之前} 的真实后继状态；reset 后的新状态出现在后续行。
+
+actor 起点需要10帧历史。\code{sample_starts()} 的历史向后距离同时受 episode 已进行步数与缓存可用年龄限制。reset 之前或缓存最早行之前的历史使用最早可用帧重复填充，而不是读取物理不连续的旧 episode。环形存储的物理行号与时间年龄通过 \code{_row()} 转换，避免 wrap-around 后把最新和最旧当作邻接历史。
+
+\code{sample_valid_starts()} 对参考尾部采用拒绝采样；在默认长动作库中有可用起点，但函数没有“找不到足够长 clip”的退出条件。若替换为全都短于想象 horizon 的动作，或可用缓存只有尾帧，应先验证 $H$ 与数据长度。这是代码边界检查的缺口，不是本报告已观察到默认训练卡住。
+\source{\src{supermimic/buffer.py}{41}{70}；\src{supermimic/train.py}{159}{169}}
+
+\subsection{基于回报的困难片段采样}
+动作时间线被划为1秒、即50控制帧的 bins。设总 bin 数为 $M$，$G_b$ 为该 bin 的回报估计，$G_{\max}=0.1/(1-0.99)=10$。当前困难度为
+\begin{equation}
+ w_b=\frac{\exp(-25G_b/G_{\max})}{\sum_{b'}\exp(-25G_{b'}/G_{\max})},\quad
+ P(b)=\frac{0.5}{M}+0.4w_b+0.1\frac{\bar w_b}{\sum_{b'}\bar w_{b'}}.
+\end{equation}
+负号意味着低回报 bin 更容易被采样；0.5均匀项避免只盯困难动作，0.1历史项帮助已学会的难例保持练习。代码的历史软权重采用 $\bar w\leftarrow0.999\bar w+0.001w$，具体EMA系数属于实现选择。
+
+重置后从参考状态开始，加随机扰动。回报仅在 episode 结束时分配给\emph{该 episode 起始 bin}，不是给沿途经过的所有 bin。多个环境在同一次结束于同一 bin 时，\code{update_bin_returns()} 先求这些回报的均值，再做
+\begin{equation}
+ G_b\leftarrow0.8G_b+0.2\,\operatorname{mean}\{G^{(i)}:\mathrm{startbin}_i=b\}.
+\end{equation}
+这避免同一 bin 的重复索引写入导致与环境顺序有关的更新。
+\source{\src{supermimic/motion.py}{72}{87}；\src{supermimic/env.py}{131}{140}；\src{supermimic/reset_sampling.py}{6}{13}}
+
+\subsection{超时 bootstrap 与 critic bootstrap 不是一回事}
+训练 episode 最多500步（10秒），或运行到 clip 尾部；硬失败则立即终止。为更新重置采样的 $G_b$，代码对非硬失败结束添加
+\begin{equation}
+ G=\sum_{t=0}^{T-1}\gamma^t r_{t+1}
+ +\mathbf1_{\rm not\ terminal}\,\gamma^T
+ \frac{\frac1T\sum_{t=0}^{T-1}r_{t+1}}{1-\gamma}.
+\end{equation}
+这是用\textbf{本段平均奖励率}近似无限后续的启发式，不是调用 critic 估值；原论文没有给出该具体截断处理。想象 actor 的 bootstrap 则是式\eqref{eq:actor}中的 $V_\psi$。两者服务不同目的，不能用一句“所有超时都用 critic bootstrap”概括。
+\source{\src{supermimic/env.py}{207}{235}}

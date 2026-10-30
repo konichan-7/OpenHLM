@@ -1,0 +1,59 @@
+\section{源码导航与阅读抓手}
+\subsection{按问题而不是按文件长度阅读}
+\begin{longtable}{@{}P{41mm}P{77mm}P{36mm}@{}}
+\toprule
+想回答的问题 & 推荐起点 & 对应论文\\\midrule\endfirsthead
+\toprule 想回答的问题 & 推荐起点 & 对应论文\\\midrule\endhead
+每轮到底更新什么？ & \src{supermimic/train.py}{290}{321} & 图2、算法A.1\\
+真实动作如何进入模型数据？ & \src{supermimic/train.py}{266}{283}；\src{supermimic/env.py}{192}{213} & 第3.1节\\
+8步窗口怎样形成？ & \src{supermimic/buffer.py}{41}{55}；\src{supermimic/train.py}{95}{108} & 式(1)\\
+局部增量如何变回世界状态？ & \src{supermimic/networks.py}{82}{134} & 第3.2节的实现细化\\
+为什么冻结模型还能训练策略？ & \src{supermimic/train.py}{185}{222} & 式(2)\\
+GAE目标是否每轮重算？ & \src{supermimic/train.py}{223}{252} & 式(3)，目标每批仅算一次\\
+策略是否使用特权参数？ & \src{supermimic/mdp.py}{95}{105}；\src{supermimic/networks.py}{151}{155} & 附录A--B\\
+身体奖励如何保持可微？ & \src{supermimic/kinematics.py}{62}{90}；\src{supermimic/mdp.py}{108}{145} & 表A.2\\
+未来目标在尾帧如何处理？ & \src{supermimic/motion.py}{94}{120} & Goal的实现选择\\
+哪个分布决定困难动作重试？ & \src{supermimic/env.py}{131}{140}；\src{supermimic/env.py}{225}{235} & 附录D.1\\
+评估成功和回报怎样定义？ & \src{supermimic/evaluate.py}{69}{91} & 附录F.1\\
+为什么checkpoint不等于可精确续训？ & \src{supermimic/train.py}{82}{87}；\src{supermimic/train.py}{341}{352} & 工程边界\\
+\bottomrule
+\end{longtable}
+
+\clearpage
+\subsection{精简伪代码：三个优化器的梯度边界}
+以下为解释性伪代码，不是仓库可直接运行的替代脚本：
+\begin{lstlisting}
+for iteration in schedule:
+    # No simulator differentiation; store the action actually executed.
+    replay += simulator(policy(noisy_obs, goal) + action_noise)
+
+    for _ in range(10):
+        window = replay.sample_windows(B=2048, k=8)
+        predicted = autoregress(wm, window.s0, window.logged_actions)
+        loss_wm = masked_standardized_state_error(predicted, window)
+        step(opt_wm, loss_wm)
+
+    if iteration < 500:
+        continue
+    start, history = replay.sample_valid_imagination_starts(B=4096)
+    freeze_parameters(wm, critic)  # NOT no_grad; retain input Jacobians
+    imagined = rollout(wm, policy, start, history, H=32)
+    J = discounted_survival_reward(imagined)
+    J += gamma**32 * imagined.survival * critic(imagined.last)
+    step(opt_policy, -J.mean())
+    unfreeze_parameters(wm, critic)
+
+    with no_grad():
+        X = detached_critic_features(imagined)
+        targets = lambda_returns(X, imagined.r, imagined.d, lam=0.95)
+    for epoch in range(5):
+        for minibatch in shuffle_into_four(X, targets):
+            step(opt_critic, mse(critic(minibatch.X), minibatch.targets))
+\end{lstlisting}
+
+\section{复用报告源文件与验证记录}
+LaTeX 工程由 \code{main.tex}、\code{sections/}、\code{references.bib} 构成。使用支持中文的 XeLaTeX/BibTeX，或 Tectonic 编译；工程采用CTeX自带Fandol字库，未依赖机器私有字体，也未将论文页面或演示图当作生成的实验结果。
+
+\code{EVIDENCE.md} 记录来源、已执行验证与未验证范围；\code{source_manifest.json} 固定上游文件校验和及PDF校验和；\code{verify_alignment.py} 在外部固定提交的源码目录上运行。编译产生的PDF、日志和图像不属于算法源码，不应混入训练项目提交。
+
+本报告引用少量源码标识和结构，代码来源为MIT许可的非官方仓库，仓库署名 Chong Zhang。数据与机器人资产有独立许可，代码MIT许可不等于数据可自由再分发。本文未向 Zotero 导入新条目、修改原条目或分发动作数据、模型checkpoint与原论文PDF。

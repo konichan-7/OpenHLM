@@ -1,0 +1,116 @@
+\documentclass[UTF8,fontset=fandol,a4paper,11pt]{ctexart}
+\usepackage[margin=22mm,top=23mm,bottom=22mm,headheight=15pt]{geometry}
+\usepackage{amsmath,amssymb,bm,mathtools,booktabs,longtable,tabularx,array,multirow}
+\usepackage[table]{xcolor}
+\usepackage{graphicx,tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,calc}
+\usepackage[most]{tcolorbox}
+\usepackage{enumitem,fancyhdr,lastpage,listings,xurl,placeins,needspace}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage[unicode,colorlinks=true,linkcolor=navy,urlcolor=tealblue,citecolor=tealblue]{hyperref}
+\definecolor{navy}{HTML}{18344D}
+\definecolor{tealblue}{HTML}{087F8C}
+\definecolor{pale}{HTML}{EDF5F7}
+\definecolor{warm}{HTML}{9A5A18}
+\definecolor{ink}{HTML}{253443}
+\hypersetup{pdftitle={SuperMimic 论文与代码对齐报告},pdfauthor={代码与文献审读},pdfsubject={arXiv:2610.28480v1 与 supermimic-vibed 8bfc1158 的实现对齐}}
+\ctexset{section={format=\Large\bfseries\color{navy}},subsection={format=\large\bfseries\color{navy}},subsubsection={format=\normalsize\bfseries}}
+\setlength{\emergencystretch}{3em}
+\setlength{\parskip}{0.35em}
+\linespread{1.16}
+\setcounter{tocdepth}{2}
+\setcounter{secnumdepth}{3}
+\setlist[itemize]{leftmargin=1.6em,itemsep=0.15em,topsep=0.3em}
+\setlist[enumerate]{leftmargin=2em,itemsep=0.2em,topsep=0.3em}
+\renewcommand{\arraystretch}{1.22}
+\setlength{\tabcolsep}{5pt}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+\newcolumntype{P}[1]{>{\raggedright\arraybackslash}p{#1}}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{navy}SuperMimic / 论文与代码对齐}
+\fancyhead[R]{\small\color{navy}源码快照 8bfc1158}
+\fancyfoot[L]{\footnotesize\color{gray}非官方复现审读 · 2026-10-30}
+\fancyfoot[R]{\small\thepage}
+\renewcommand{\headrulewidth}{0.35pt}
+\newcommand{\code}[1]{\nolinkurl{#1}}
+\newcommand{\src}[3]{\href{https://github.com/zita-ch/supermimic_vibed/blob/8bfc1158bd968f729fcc65d5e897a05b05ea3d36/#1\#L#2-L#3}{\nolinkurl{#1}:#2--#3}}
+\newcommand{\paper}[1]{\textbf{论文定位：}#1\cite{liao_supermimic_2026}。}
+\newcommand{\source}[1]{\par\noindent{\small\color{tealblue}\textbf{源码定位：}#1。}\par}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\sg}{\operatorname{sg}}
+\newcommand{\dd}{\mathrm{d}}
+\newcommand{\heading}{\operatorname{yaw}}
+\newcommand{\six}{\operatorname{six}}
+\newtcolorbox{insight}[1]{enhanced,colback=pale,colframe=tealblue,boxrule=0.55pt,arc=1.5mm,title={#1},fonttitle=\bfseries,coltitle=white,before skip=8pt,after skip=8pt}
+\newtcolorbox{caution}[1]{enhanced,colback=orange!4,colframe=warm,boxrule=0.55pt,arc=1.5mm,title={#1},fonttitle=\bfseries,coltitle=white,before skip=8pt,after skip=8pt}
+\lstset{language=Python,basicstyle=\ttfamily\footnotesize,keywordstyle=\color{navy}\bfseries,commentstyle=\color{gray},stringstyle=\color{tealblue},breaklines=true,columns=fullflexible,keepspaces=true,showstringspaces=false,frame=single,rulecolor=\color{gray!30},backgroundcolor=\color{gray!3},aboveskip=0.6em,belowskip=0.6em}
+\begin{document}
+\hypersetup{pageanchor=false}
+\begin{titlepage}
+\thispagestyle{empty}
+\begin{tikzpicture}[remember picture,overlay]
+\fill[navy] (current page.north west) rectangle ([yshift=-82mm]current page.north east);
+\fill[tealblue] ([yshift=-82mm]current page.north west) rectangle ([yshift=-84mm]current page.north east);
+\end{tikzpicture}
+\vspace*{2mm}
+{\color{white}\sffamily\large PAPER $\leftrightarrow$ CODE\par}
+\vspace{7mm}
+{\color{white}\Huge\bfseries SuperMimic\par}
+\vspace{3mm}
+{\color{white}\LARGE 论文与代码对齐报告\par}
+\vspace{28mm}
+{\Large\bfseries 从可微世界模型到全身运动跟踪\par}
+\vspace{4mm}
+{\large 框架、张量接口、核心公式、梯度路径与复现边界\par}
+\vspace{9mm}
+\noindent\begin{tabularx}{\textwidth}{@{}P{27mm}Y@{}}
+\toprule
+论文 & \textit{SuperMimic: Scaling Humanoid Whole-Body Control with One Differentiable World Model}\\
+作者 & Qiayuan Liao, Yiyang Shao, Junfeng Long, Kevin Zakka, Roberto Horowitz, Pieter Abbeel, Koushil Sreenath\\
+文献版本 & arXiv:2610.28480v1，2026-10-20；Zotero 全文，共19页\\
+代码对象 & \url{https://github.com/zita-ch/supermimic_vibed}\\
+固定提交 & \texttt{8bfc1158bd968f729fcc65d5e897a05b05ea3d36}\\
+报告日期 & 2026年10月30日（Asia/Shanghai）\\
+\bottomrule
+\end{tabularx}
+\vspace{8mm}
+\begin{insight}{报告结论先读}
+该仓库实现了 SuperMimic 的核心三阶段训练循环：仿真采样、世界模型拟合、基于想象轨迹的 BPTT 策略与价值学习。它是面向 LAFAN1 的\textbf{非官方、部分范围复现}，不能直接视为论文全部实验的官方代码。本文将论文规定、代码事实、解释性推导和已运行验证明确区分。
+\end{insight}
+\vfill
+{\small 交付内容：可检索 PDF、可编辑 LaTeX 工程、固定版本来源清单及 CPU 验证脚本。\par}
+{\small 本次未进行 GPU 训练或实机实验；性能数据均注明出处与证据等级。\par}
+\end{titlepage}
+\hypersetup{pageanchor=true}
+\pagenumbering{roman}
+\tableofcontents
+\clearpage
+\pagenumbering{arabic}
+\input{sections/01_scope}
+\FloatBarrier
+\input{sections/02_framework}
+\FloatBarrier
+\input{sections/03_interface}
+\FloatBarrier
+\input{sections/04_world_model}
+\FloatBarrier
+\input{sections/05_actor_critic}
+\FloatBarrier
+\input{sections/06_replay_reset}
+\FloatBarrier
+\input{sections/07_engineering}
+\clearpage
+\input{sections/08_alignment}
+\FloatBarrier
+\input{sections/09_evaluation}
+\FloatBarrier
+\input{sections/10_verification}
+\clearpage
+\appendix
+\input{sections/11_appendix}
+\clearpage
+\bibliographystyle{unsrtnat}
+\bibliography{references}
+\end{document}

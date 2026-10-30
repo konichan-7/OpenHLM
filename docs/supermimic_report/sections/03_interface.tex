@@ -1,0 +1,98 @@
+\section{MDP 与张量契约：先对齐量，再对齐网络}\label{sec:interface}
+\paper{附录A、表A.1--A.3（第13--14页）及附录C表A.4（第15页）}
+\subsection{状态、观测、目标与上下文不是同一个向量}
+代码的内部状态为
+\begin{equation}
+ S=(p,R,v,\omega,q,\dot q),\quad p,v,\omega\in\R^3,\ R\in SO(3),\ q,\dot q\in\R^{29}.
+\end{equation}
+$p,R$ 是 pelvis 的世界位姿，$v,\omega$ 是该 link 原点的世界线速度和角速度，不是把质心速度无条件当作 link 速度。缓存把旋转矩阵转为 \code{wxyz} 四元数；外部 CSV 与 Isaac Lab 状态的四元数则按 \code{xyzw} 转换。把这两种约定混用会直接破坏参考动作和模型监督。
+
+\begin{table}[htbp]
+\centering\small
+\noindent\begin{tabularx}{\textwidth}{@{}P{36mm}P{27mm}Y@{}}
+\toprule
+对象 & 默认形状（批大小$B$） & 含义与计算\\
+\midrule
+缓存状态 & $B\times71$ & $3+4+3+3+29+29$，用四元数存旋转\\
+世界模型不变特征 & $B\times71$ & $1+6+3+3+29+29$，不是缓存状态的别名\\
+世界模型输入 & $B\times133$ & 不变特征71 + 动作29 + 上下文33\\
+动力学增量输出 & $B\times70$ & $3+3+3+3+29+29$，旋转在三维切空间预测\\
+单帧策略观测 & $B\times99$ & 论文93维 + 额外6维相对根朝向\\
+观测历史 & $B\times10\times99$ & 展平为990维，最早帧在前\\
+单帧参考特征 & $B\times73$ & $3+6+3+3+29+29$\\
+未来目标 $g$ & $B\times730$ & $K=10$帧参考特征展平\\
+隐变量 $z$ / 动作 & $B\times32$ / $B\times29$ & $z$ 经 $\tanh$，动作输出无 $\tanh$\\
+策略解码器输入 & $B\times1022$ & 990维历史 + 32维隐变量\\
+critic 输入 & $B\times914$ & 不变特征71 + 额外113 + 目标730\\
+\bottomrule
+\end{tabularx}
+\caption{由固定版本代码计算的默认接口维数。符号“状态维数71”在两处出现，但量的语义不同。}
+\end{table}
+\source{\src{supermimic/dimensions.py}{1}{2}；\src{supermimic/mdp.py}{54}{81}；\src{supermimic/train.py}{69}{78}}
+
+\subsection{观测与动作：哪些属于论文，哪些是额外选择}
+论文表A.1给出93维本体观测：$q-q^0$（29）、$\dot q$（29）、机体系角速度（3）、投影重力（3）、上一动作（29），并使用10帧历史。代码实际构造
+\begin{equation}
+\begin{split}
+ \bar o_t=\big[&q_t-q^0-\Delta q^0,\ \dot q_t,\ R_t^\top\omega_t,\ -R_t^\top e_3,\ a_{t-1},\\
+ &\six(R_t^\top R_t^{\rm ref})\big]\in\R^{99}.
+\end{split}
+\end{equation}
+最后6维是\textbf{额外的参考相对根朝向}，原论文表A.1未列出。这里 $\six$ 是矩阵前两列按代码顺序展平，不是欧拉角。它显式输入跟踪朝向误差；不能因为不包含全局位置，就称为与论文观测完全相同。
+
+代码按表A.1对前四类量加入独立均匀噪声，半宽依次为0.01 rad、0.5 rad/s、0.2 rad/s、0.05；上一动作不加噪。新增6维也加入半宽0.05的分量噪声。之后 \code{Policy.obs_norm} 再做在线均值方差标准化。\code{mdp.py} 虽定义 \code{OBS_SCALE}，但当前 \code{obs()} 和策略前向并未使用该固定缩放常量，不能把它误写成实际观测预处理。
+
+动作是归一化关节设定量，不是网络直接输出电机力矩：
+\begin{equation}
+ q^{\rm sp}=q^0+\Delta q^0+\alpha\odot a,\quad
+ K_p=I_a\omega_n^2,\quad K_d=2\zeta I_a\omega_n,\quad
+ \alpha_j=\frac{0.25\,\tau^{\max}_j}{K_{p,j}},
+\end{equation}
+其中 $I_a$ 为反射电枢惯量，$\omega_n=2\pi\cdot10$，$\zeta=2$。机器人配置使用隐式PD驱动，并设置 effort/velocity 限制。策略解码器是线性输出；采样时对\emph{加噪后的}动作裁剪到 $[-20,20]$，这不是通常意义的 $[-1,1]$ 动作空间，想象与评估中的策略输出也没有这一步裁剪。
+\source{\src{supermimic/mdp.py}{18}{35}；\src{supermimic/mdp.py}{94}{105}；\src{supermimic/robot.py}{26}{36}；\src{supermimic/robot.py}{88}{91}；\src{supermimic/env.py}{192}{205}；\src{supermimic/train.py}{274}{280}}
+
+\subsection{参考动作管线与未来目标的具体构造}
+CSV 每帧包含根位置3、根四元数4、29个关节角，共36个数，关节顺序严格按照 \code{G1_JOINT_NAMES}。\code{MotionLib} 从30 Hz重采样到50 Hz：根位置与关节角线性插值，四元数做最短弧 SLERP；线速度与关节速度用差分，角速度用相邻旋转的 $SO(3)$ 对数计算。随后通过 FK 预计算14个跟踪体的位姿和速度。
+
+令 $H_f=\heading(R_f^{\rm ref})$，未来帧 $j=f+1,\ldots,f+K$ 的特征为
+\begin{equation}
+ g_{f,j}=\left[
+ H_f^\top(p_j^{\rm ref}-p_f^{\rm ref}),\ 
+ \six(H_f^\top R_j^{\rm ref}),\ 
+ (R_j^{\rm ref})^\top v_j^{\rm ref},\ 
+ (R_j^{\rm ref})^\top\omega_j^{\rm ref},\ 
+ q_j^{\rm ref},\ 0.1\dot q_j^{\rm ref}
+ \right].
+\end{equation}
+目标的相对位移/朝向以\textbf{当前参考 heading} 为基准，速度则以\textbf{各自未来参考根坐标系} 表示；不要把它们统称为同一机体系。$K=10$提供前方0.02--0.20秒的参考，编码器接收730维扁平向量，而非 Transformer 序列。
+
+查询超出 clip 尾部时，位置、朝向与关节角保持最后一帧，合成延长部分的速度置零；真实最后一帧原本的速度仍保留。\code{goal()} 不修改源参考数据，也不修改用于回报的 \code{ref_state()}。这一区别避免“为了补齐网络输入，把真实尾帧也静止化”。
+\source{\src{supermimic/motion.py}{24}{70}；\src{supermimic/motion.py}{94}{120}；\src{supermimic/robot.py}{39}{58}}
+
+\subsection{回报：同一解析函数同时服务仿真和想象}
+设 $\mathcal T$ 为14个跟踪体。代码先计算跟踪误差的六个标量：各身体的平均位置平方误差 $E_p$、平均旋转测地角平方 $E_R$、平均线/角速度平方误差 $E_v,E_\omega$，以及根位置和根朝向误差 $E_{rp},E_{rR}$。
+\begin{equation}\label{eq:reward}
+\begin{split}
+ r_{t+1}=\Delta t\Big[&e^{-E_p/0.3^2}+e^{-E_R/0.4^2}
+ +e^{-E_v/1.0^2}+e^{-E_\omega/3.14^2}\\
+ &+0.5e^{-E_{rp}/0.3^2}+0.5e^{-E_{rR}/0.4^2}
+ -0.1\lVert a_t-a_{t-1}\rVert^2-2P_{\rm lim}(q_{t+1})\Big],
+\end{split}
+\end{equation}
+其中 $\Delta t=0.02$ 秒；$P_{\rm lim}$ 是越过关节上下限的线性 ReLU 和，不是平方惩罚。代码用关节范围中间90\%作为软限制。六个正奖励的权重和为5，因此 \code{MAX_STEP_REWARD}=0.1，供日志和评估归一化使用。
+
+\textbf{坐标重锚定需要逐项读。} 身体位置/朝向的参考先按机器人当前根的xy位置与 yaw 重锚定，锚点高度仍使用参考根高度；根位置和根朝向两项仍比较原始参考全局量。身体速度两项使用原始世界坐标参考速度，没有同步做上述 yaw 重锚定。因此它不是“所有奖励均对全局平移与旋转不变”的实现；这也是检查奖励重构时不能省略的细节。原论文表A.2列出了误差形式，但未把这一重锚定实现细节完整展开，本报告只将其记为代码事实。
+\source{\src{supermimic/mdp.py}{84}{89}；\src{supermimic/mdp.py}{108}{145}}
+
+\subsection{终止、随机化与解析 FK}
+仿真硬终止是
+\begin{equation}\label{eq:hardterm}
+ d_{t+1}=\mathbf1\{\lvert p_z^{\rm ref}-p_z\rvert>0.25\ \lor\ 
+ \lvert(R^{\rm ref})_{33}-R_{33}\rvert>0.8\}.
+\end{equation}
+第二项是两种根坐标系中重力方向z分量差的绝对值，不是欧拉角差；参考直立时阈值对应约78.5度倾斜。代码没有末端执行器偏差终止，与论文附录A一致。
+
+上下文 $\xi=[\mu,\Delta q^0,\Delta c_{\rm torso}]\in\R^{33}$ 包含摩擦、29维关节零位偏差与3维躯干质心偏移，分布范围与表A.3相同。摩擦和质心偏移在环境启动时采样一次，关节偏移每个 episode 重采样；所以“每个 episode 的 context”不表示每次 reset 都重采样所有分量。训练 reset 还叠加位置、姿态、速度、关节角扰动，不能和持续施加外部推力混为一谈。
+
+FK 沿关节树递推 $p_i=p_{\rm par}+R_{\rm par}\bar p_i$、$R_i=R_{\rm par}\bar R_i\exp([u_iq_i]_\times)$，并传播 $\omega_i=\omega_{\rm par}+u_i^{\rm world}\dot q_i$、$v_i=v_{\rm par}+\omega_{\rm par}\times(p_i-p_{\rm par})$。这些操作由 PyTorch 构成，允许身体回报对预测状态求导。\textbf{FK是可微运动学，不是可微接触物理引擎。} 接触影响由动力学网络从仿真转移中学习。
+\source{\src{supermimic/mdp.py}{147}{161}；\src{supermimic/env.py}{72}{90}；\src{supermimic/env.py}{142}{184}；\src{supermimic/kinematics.py}{62}{90}}

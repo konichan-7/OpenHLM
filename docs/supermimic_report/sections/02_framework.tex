@@ -1,0 +1,52 @@
+\section{系统框架：两个前向世界，一条策略梯度链}\label{sec:framework}
+\paper{第3.1节、图2、附录D算法A.1（第4、15页）}
+\subsection{三阶段训练循环}
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small,node distance=8mm and 8mm,box/.style={draw=tealblue,rounded corners,fill=pale,align=center,text width=43mm,minimum height=17mm},arr/.style={-{Latex[length=2mm]},thick,draw=navy}]
+\node[box] (sim) {刚体仿真采样\\$a=\pi_\theta(o,g)+\epsilon$};
+\node[box,right=of sim] (buf) {GPU replay buffer\\$(s,a,s',\xi,f,\ldots)$};
+\node[box,right=of buf] (fit) {自回归动力学拟合\\更新 $\omega$，$k=8$};
+\node[box,below=14mm of buf] (imag) {冻结世界模型参数\\$H=32$步想象与解析头};
+\node[box,left=of imag] (actor) {最大化想象回报\\BPTT 更新 $\theta$};
+\node[box,right=of imag] (critic) {固定 $\lambda$-return 目标\\监督更新 $\psi$};
+\draw[arr] (sim)--(buf);
+\draw[arr] (buf)--(fit);
+\draw[arr] (buf)--node[right,font=\scriptsize]{抽起点及历史}(imag);
+\draw[arr] (fit)--(imag);
+\draw[arr] (imag)--(actor);
+\draw[arr] (imag)--(critic);
+\draw[arr] (actor)--(sim);
+\draw[arr,dashed] (critic.north west)--node[above,sloped,font=\scriptsize]{终端价值}(imag.north east);
+\end{tikzpicture}
+\caption{根据论文图2与固定版本代码重新绘制的训练数据流。虚线表示价值 bootstrap 的依赖，不表示对仿真器求导。}
+\end{figure}
+
+\textbf{阶段一：Collect。} 当前策略依据带噪观测与未来动作目标输出29维动作。采样时加入标准差0.1的高斯噪声，执行后的动作写入缓存。仿真器产生下一状态，解析 MDP 代码为其计算回报和终止标签。旧策略产生的数据仍可用于动力学监督，因为物理转移不因“谁采样了它”而改变。
+
+\textbf{阶段二：Fit。} 从缓存取2048个8步窗口。世界模型只在窗口第一帧使用真实状态，之后以自身预测为输入，依次执行缓存中的实际动作。每次外层迭代做10次世界模型优化，而非只做一次单步回归。
+
+\textbf{阶段三：Improve。} 从缓存取4096个合法起点及其10帧观测历史，使用当前策略和固定的世界模型进行32步想象。解析计算回报与软终止，累加折扣存活回报并加末端 critic 值；对策略做一次反向传播。随后固定本批想象轨迹产生的价值目标，对 critic 做5轮、每轮4个 minibatch 的拟合。
+\source{\src{supermimic/train.py}{266}{321}；\src{supermimic/train.py}{147}{156}；\src{supermimic/train.py}{175}{252}}
+
+\subsection{模块分工与调用关系}
+\noindent\begin{tabularx}{\textwidth}{@{}P{32mm}Y Y@{}}
+\toprule
+模块 & 主要责任 & 核心调用或输出\\
+\midrule
+\code{train.py} & 调度采样、模型、actor、critic，管理优化器与检查点 & \code{collect / wm_update / policy_update}\\
+\code{env.py} & Isaac Lab/物理后端封装，动作执行、重置与逐环境上下文 & \code{TrackingSim.step/reset/state}\\
+\code{motion.py} & CSV 重采样、参考速度、跟踪体缓存与未来目标 & \code{MotionLib.goal/ref_state}\\
+\code{mdp.py} & 状态编解码、观测、回报、硬/软终止与 critic 特征 & 仿真与想象共享同一套解析语义\\
+\code{networks.py} & 世界模型、策略编码器/解码器、critic、在线归一化 & \code{WorldModel / Policy / Critic}\\
+\code{buffer.py} & GPU 环形缓存、跨终止掩码、历史恢复 & 时间 $\times$ 环境的稠密存储\\
+\code{kinematics.py} & 可微 FK 与 link-origin 速度递推 & 14个跟踪体的位姿和速度\\
+\code{robot.py} & G1关节顺序、PD参数、动作缩放与资产路径 & 29自由度与14个跟踪体定义\\
+\code{evaluate.py} & 从参考首帧确定性运行并汇总指标 & clip-mean / frame-weighted 回报与失败数\\
+\bottomrule
+\end{tabularx}
+
+\subsection{训练与部署的信息边界}
+世界模型接收完整状态和仿真上下文 $\xi$，critic 还可接收参考误差等特权量；策略则接收带噪观测历史与参考目标，不直接接收摩擦、质心偏移等真实参数。这种不对称输入让训练侧利用更多信息，而控制器仍依据可构造的观测动作。
+
+世界模型既不读取未来参考目标，也不把 motion ID 当作物理参数；动作参考只决定策略行为、回报和终止，因此一个动力学模型可以共享于很多动作。评估时只需要策略和解析观测/目标构造，\textbf{不运行世界模型和 critic}。这份仓库没有真实机器人通信和部署执行器，不能把“评估只加载策略”理解为已经实现了实机部署。

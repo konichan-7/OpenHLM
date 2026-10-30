@@ -1,0 +1,39 @@
+\section{本次验证、局限与接手建议}\label{sec:verify}
+\subsection{真正运行过的检查}
+随附 \code{verify_alignment.py} 要求目标源码的 HEAD 与固定提交相同，对所有上游 Python 文件进行 AST 语法解析，并运行下表测试。环境为 Python 3.11.18、PyTorch 2.15.0+cpu、NumPy 2.4.6，结果\textbf{16/16通过}。
+
+\noindent\begin{tabularx}{\textwidth}{@{}P{30mm}P{10mm}Y@{}}
+\toprule
+类别 & 数量 & 实际检查内容\\
+\midrule
+上游buffer测试 & 2 & 空缓存错误信息；恰好8步缓存可抽8步窗口\\
+上游reset测试 & 3 & 重复bin先平均再EMA；顺序无关；空批不变\\
+上游goal测试 & 3 & 正常参考特征；跨尾帧保持姿态且仅补齐部分速度置零；不修改原数据\\
+新增接口检查 & 2 & 状态编解码及维数；heading/xy不变特征在变换前后一致\\
+新增动力学检查 & 2 & 小宽度网络受控输出下的局部增量积分；冻结模型权重仍有动作梯度\\
+新增回放检查 & 2 & 终止转移保留但后续被mask；历史不跨episode/环形缓存起点\\
+新增目标检查 & 2 & 存活权重索引与独立$\lambda$递推计算；软终止值与梯度方向\\
+\bottomrule
+\end{tabularx}
+
+为绕开未安装 Isaac Lab 的导入链，脚本显式替换了 \code{supermimic.kinematics} 的\textbf{导入入口}，仅供不调用FK的CPU张量逻辑使用。它不提供伪造的物理结果，不测试FK正确性。动力学积分检查使用原始 \code{WorldModel.step()}、较小隐藏层与人为设定输出；证明对应积分路径可工作，不证明训练后的大模型预测准确。存活/GAE检查是独立参考计算，未调用依赖 Isaac Lab 的完整训练主循环。
+
+\begin{caution}{验证范围不能越界}
+本次未运行 Newton/MuJoCo-Warp、资产转换、真实FK比对、CUDA、bf16、\code{torch.compile}、训练收敛、checkpoint策略评估、多GPU或实机控制。静态定位和CPU测试均不能证明论文的性能、物理稳定性与迁移结论。上游README关于FK误差达 $10^{-6}$ 的叙述也未由本次重新测量。
+\end{caution}
+
+\subsection{从读懂到严格复现的分层路线}
+\begin{enumerate}
+\item \textbf{接口层：} 核对29关节顺序、四元数顺序、50 Hz重采样、71/70/99/730/914维契约；运行随附CPU脚本。此层成本低，先排除形状相同但语义不同的问题。
+\item \textbf{物理层：} 在仓库固定的Isaac Lab版本内检查资产、FK、接触和动作设定，先少量环境执行现有 \code{test_spawn/test_env/test_reset} 等脚本；不要一上来做长训练。
+\item \textbf{学习层：} 分别记录一步/8步/32步预测误差、actor梯度范数、想象存活率与仿真失败率。想象奖励升高而物理回报下降时，优先怀疑模型偏差或接口错配，不能只看 \code{pi_loss}。
+\item \textbf{对照层：} 单独测额外6维观测、碰撞开关、bf16/TF32、warmup与误差尺度的影响；每次只改变一个实验变量，保留实际命令和完整指标。
+\item \textbf{范围层：} 若目标扩展到论文主实验，再补BONES-SEED过滤与数据组织、多GPU同步、下游接口与相应评估；这些不是改一个 \code{motion_dir} 就自动齐备的功能。
+\end{enumerate}
+
+\subsection{最终判断}
+该仓库适合作为学习 SuperMimic 核心机制的紧凑入口：三阶段训练循环和三条主要目标函数均能找到具体实现，状态几何、解析回报和BPTT图也便于逐步追踪。最值得掌握的主线是
+\begin{center}
+\textbf{条件化动力学拟合 $\rightarrow$ 可微想象 $\rightarrow$ 短时域回报梯度 $+$ 价值延伸。}
+\end{center}
+但“核心方法实现清楚”“在某LAFAN1设置下作者记录达标”与“完整严格复现论文”是不同判断。额外观测、关闭自碰撞物理、数值精度、损失尺度与实验范围都应保留在报告结论中，不能为追求表面一致而省略。

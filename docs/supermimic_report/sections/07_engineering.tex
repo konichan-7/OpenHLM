@@ -1,0 +1,57 @@
+\section{运行工程与超参数：算法之外的必要语境}
+\subsection{物理后端和时间步}
+代码运行在 Isaac Lab 3 的 kit-less 路径，通过 Newton 的 MuJoCo-Warp solver 做并行仿真，不是默认 Isaac Sim/Kit/PhysX 工作流。\code{tools/setup.sh} 将 Isaac Lab 固定到
+\begin{center}\small\code{46d6cc3d7b115906fad12efd372fbf69f4e3d3ed}\end{center}
+再构建镜像。控制周期为0.02秒，每步4个物理子步，即5 ms；solver 配置采用 \code{implicitfast} 积分、pyramidal friction cone、MuJoCo contact pipeline，约束与接触容量设置为 \code{njmax=500,nconmax=128}。
+
+G1资产经 URDF $\to$ MJCF $\to$ USD 转换后，用 \code{Physics=mujoco} variant 加载；动作CSV、机器人资产与 Isaac Lab 均不随仓库完整附带。它们的版本和转换结果会影响关节顺序、碰撞体与物理行为，所以“只 clone Python 代码”不是完整可运行环境。
+\source{\src{supermimic/env.py}{30}{45}；\src{supermimic/robot.py}{133}{146}；\src{tools/setup.sh}{1}{11}；\src{tools/download_data.sh}{1}{16}}
+
+\Needspace{10\baselineskip}
+\subsection{与论文表A.5逐项核对的默认参数}
+\begin{longtable}{@{}P{45mm}P{31mm}P{78mm}@{}}
+\caption{固定版本 \code{train.py} 的默认配置及其解释。}\label{tab:hyper}\\
+\toprule 参数 & 代码默认值 & 对齐情况或注意事项\\\midrule\endfirsthead
+\toprule 参数 & 代码默认值 & 对齐情况或注意事项\\\midrule\endhead
+并行仿真环境 & 4096 & 对齐论文单GPU配置\\
+回放缓存 & 1000步/环境 & 共约409.6万条转移，不是总共1000条\\
+模型窗口 / 想象时域 & 8 / 32 & 对齐；分别为0.16 / 0.64秒\\
+未来目标 / 观测历史 & 10 / 10帧 & 主体长度对齐；观测和目标的具体量由代码实现\\
+模型批次 & $10\times2048$ & 每次外层迭代10次优化，每批2048个窗口\\
+actor batch & 4096条想象 & 默认共131,072个想象转移\\
+critic 更新 & 5轮 $\times$ 4批 & 共20次optimizer step\\
+学习率 & $2\times10^{-4}$ & 三个优化器初值一致\\
+优化器 & Adam & actor $\beta=(0.9,0.95)$；其他使用默认beta\\
+折扣 / GAE & 0.99 / 0.95 & 对齐表A.5\\
+动作采样噪声 & $\mathcal N(0,0.1^2)$ & 对齐；只用于仿真收集，不用于想象动作\\
+梯度裁剪 & norm 1.0 & actor 再逐元素裁剪0.1\\
+update-to-data ratio & 0.4 & 以外层迭代/向量化仿真步计，不以单环境transition计\\
+学习率日程 & cosine $\to0.03\times$ & 250,000次外层迭代后保持常数\\
+最大训练迭代 & 320,000 & 默认上限；作者记录的LAFAN1成功点是14,000\\
+初始数据收集 & 64个向量步 & 在首次更新前；代码额外选择\\
+仅模型预热 & 500次迭代 & 开始阶段不做actor/critic更新；代码额外选择\\
+MLP 数值精度 & bf16 autocast & 不同于论文TF32设定；状态与解析头保持fp32\\
+多GPU & 无相应训练实现 & 默认固定 \code{cuda:0}，没有DDP/梯度汇总逻辑\\
+\bottomrule
+\end{longtable}
+\source{\src{supermimic/train.py}{18}{45}；\src{supermimic/train.py}{61}{81}；\src{supermimic/train.py}{135}{138}；\src{supermimic/train.py}{290}{321}}
+
+\subsection{UTD 的实际调度与计算量}
+代码每轮累加 $1/0.4=2.5$ 个向量化仿真步，借助小数累加器交替执行2步和3步。一次采样步含4096个环境，所以每外层迭代平均新增10,240条物理转移。之后进行10次模型 minibatch 更新、一次 actor 更新和20次 critic 更新。\textbf{这里的0.4不是“模型梯度步数/单条物理转移数”}，也不是把所有21或31次 optimizer step 一起计入的比例。
+
+\code{RunningNorm} 在真实采样数据上持续更新输入/输出及策略观测/目标的统计；critic 的统计从想象特征更新。达到约 $2\times10^8$ 个样本后停止统计更新。世界模型输出尺度来自\emph{真实单步增量}，而非全状态的标准差。断点文件保存了这些 buffer，所以加载模型时应连同归一化状态一起使用。
+\source{\src{supermimic/train.py}{275}{283}；\src{supermimic/train.py}{300}{321}；\src{supermimic/networks.py}{24}{51}}
+
+\subsection{加速策略与其可比性边界}
+\code{torch.compile} 编译世界模型 rollout、误差、想象单步、回报/终止与 critic 输入构造；代码还先堆叠所有想象状态，再批量做 FK 与奖励，减少 Python 调度和小批操作开销。MLP 矩阵乘法用 bf16 autocast，输出转换回 fp32；状态积分、FK和奖励继续使用fp32。训练脚本同时允许TF32，但 bf16 路径不能因此被描述为“严格使用论文的TF32”。
+
+README 自报 bf16 在作者机器上快约24\%，这不是本次跨硬件测量结果。依赖的 GPU 架构、CUDA、PyTorch编译和 solver 都会改变吞吐；没有同环境基准，不应把差异全部归因于算法。
+\source{\src{supermimic/networks.py}{54}{64}；\src{supermimic/train.py}{128}{132}；\src{supermimic/train.py}{190}{199}}
+
+\subsection{checkpoint 与 resume 的真实边界}
+\code{last.pt} 保存 world model、actor、critic、三个优化器和计数器；编号快照只保存 actor、world model 等子集，用于评估。\code{--resume} 直接读取完整键集合，因此应使用 \code{last.pt}，不能假定评估用的小快照也可无差别续训。
+
+恢复时不载入 replay buffer、物理环境状态、reset bin 回报统计、观测历史或随机数生成器状态；这些在新进程重新创建。所以它是“加载学习状态继续训练”，不是逐位相同的无缝续跑。读取恢复迭代后，\code{lr_at(it)} 会按计数重新设置学习率。
+
+计时起点在环境初始化与最初数据收集之后；构建、下载、资产转换和评估不计入训练日志。500次仅模型优化则在主循环计时内。复现实验应同时报告端到端耗时与该训练计时，避免把两者混为同一种成本。
+\source{\src{supermimic/train.py}{82}{87}；\src{supermimic/train.py}{290}{302}；\src{supermimic/train.py}{341}{352}}

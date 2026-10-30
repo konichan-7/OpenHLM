@@ -1,0 +1,12 @@
+# Local LaTeX products and QA files are not source deliverables.
+*.aux
+*.bbl
+*.blg
+*.fls
+*.fdb_latexmk
+*.log
+*.out
+*.pdf
+*.synctex.gz
+*.toc
+build/

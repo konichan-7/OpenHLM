@@ -1,0 +1,38 @@
+\section{论文--代码逐项对齐矩阵}\label{sec:matrix}
+下面的“对齐”指算法结构或相应数值配置能够在源码中定位，不表示本次运行证明了相同实验成绩；“实现选择”表示论文允许但没有规定具体形式；“偏离”表示与论文列出的接口或运行条件不同；“未覆盖”表示在该固定版本中未找到相应完整实现。
+
+\small
+\begin{longtable}{@{}P{30mm}P{45mm}P{79mm}@{}}
+\caption{方法、接口及实验范围的对齐清单。所有源码定位均绑定固定提交。}\\
+\toprule 论文对象 & 代码锚点 & 判断及理由\\\midrule\endfirsthead
+\toprule 论文对象 & 代码锚点 & 判断及理由\\\midrule\endhead
+图2、算法A.1 & \src{supermimic/train.py}{300}{321} & \textbf{主体对齐。} 同一在线循环里收集、拟合、想象学习；开始阶段额外加入模型预热。\\
+第3.1节，实际执行动作入缓存 & \src{supermimic/train.py}{274}{283} & \textbf{对齐。} 加噪并裁剪后的动作输入仿真并存入buffer，而非只存确定性动作。\\
+第3.2节，条件化动力学 & \src{supermimic/networks.py}{67}{113} & \textbf{主体对齐。} 输入状态特征、动作与33维context；局部特征及增量积分是具体实现选择。\\
+式(1)，8步窗口 & \src{supermimic/train.py}{95}{108} & \textbf{结构对齐、度量具体化。} 自回归，mask阻止跨episode监督；误差按自适应尺度标准化。\\
+第3.2节，辅助头 & \src{supermimic/mdp.py}{94}{161} & \textbf{允许的实现选择。} 回报、观测、终止解析计算，无额外预测损失；新增参考朝向使观测还依赖目标信息。\\
+式(2)，BPTT目标 & \src{supermimic/train.py}{175}{222} & \textbf{主体对齐。} $H=32$、折扣存活奖励、终端价值；只冻结模型和critic权重，保留输入梯度。\\
+式(3)，价值目标 & \src{supermimic/train.py}{223}{252} & \textbf{对齐。} 想象数据上倒序$\lambda$-return，目标只计算一次，监督训练5轮$\times$4批。\\
+附录A，表A.1观测 & \src{supermimic/mdp.py}{18}{35}；\src{supermimic/mdp.py}{95}{105} & \textbf{偏离。} 93维本体项之外加入6维相对参考朝向和相应噪声，总计99维。不能称完全相同观测的严格受控复现。\\
+附录A，未来参考目标 & \src{supermimic/motion.py}{94}{117} & \textbf{长度对齐，内容具体化。} 10个未来帧、每帧73维、730维展平；论文没有完整列出这里的全部特征及尾帧填充。\\
+表A.2，回报 & \src{supermimic/mdp.py}{108}{145} & \textbf{主体对齐。} 六跟踪项与权重、动作平滑、关节限位权重一致；坐标重锚定和90\%软限位按源码解释。\\
+删除自碰撞奖励 & \src{supermimic/robot.py}{133}{146} & \textbf{需区分两层。} 删除奖励项符合论文；关闭物理自碰撞是仓库额外偏离，不由论文这句话推出。\\
+附录A，终止 & \src{supermimic/mdp.py}{147}{161} & \textbf{硬阈值对齐、软头具体化。} 高度0.25m、重力z差0.8；想象sigmoid温度0.02/0.04未由论文规定。\\
+表A.3，context/DR & \src{supermimic/env.py}{72}{90}；\src{supermimic/env.py}{182}{184} & \textbf{范围对齐、采样时机不同粒度。} 摩擦/质心每环境启动一次，关节零位每episode。\\
+表A.4，网络 & \src{supermimic/networks.py}{67}{77}；\src{supermimic/networks.py}{137}{165} & \textbf{隐藏层宽度及latent对齐。} LayerNorm/激活/初始化属实现选择；实际输入维数随额外特征改变。\\
+附录D.1，重置分布 & \src{supermimic/env.py}{131}{140}；\src{supermimic/reset_sampling.py}{6}{13} & \textbf{混合比例对齐。} 50/40/10与softmax系数25一致；EMA、重复bin聚合与截断bootstrap为具体实现。\\
+表A.5，训练计划 & \src{supermimic/train.py}{18}{45} & \textbf{大部分对齐。} 4096环境、UTD、batch、学习率与裁剪；额外64步收集及500轮仅模型预热。\\
+论文数值精度 & \src{supermimic/train.py}{61}{65}；\src{supermimic/networks.py}{56}{64} & \textbf{偏离。} MLP默认bf16，而论文报告TF32；硬件也不同。\\
+附录B/G，多目标接口 & \src{supermimic/networks.py}{137}{165} & \textbf{未覆盖。} 只有motion encoder；没有velocity/末端/SMPL接口、decoder定向冻结和latent-alignment训练。\\
+双GPU、规模扩展 & \src{supermimic/train.py}{65}{74} & \textbf{未覆盖。} 固定单设备，无DDP；未提供BONES-SEED过滤/扩展实验全流程。\\
+附录F.1，评估 & \src{supermimic/evaluate.py}{52}{96} & \textbf{主要协议对齐。} 首帧确定性、无噪声/DR、相同硬失败；具体回报汇总应区分clip与frame权重。\\
+第4.4节，实机转移 & 仓库无对应完整模块 & \textbf{未覆盖。} 仿真评估和视频渲染不构成机器人通信、实时控制与实机验证。\\
+\bottomrule
+\end{longtable}
+\normalsize
+
+论文第4.5节实际展示的下游实验是速度接口的初步研究；附录B提到的末端位姿、SMPL目标属于多接口的泛化描述，不能据此声称原论文逐一完成了这些接口的完整实验。“未覆盖”也不表示这些模块是读懂核心motion-tracking实现的前提。
+
+\begin{caution}{如何解读“非官方复现成功”}
+可以说该实现保留了论文核心方法，并由作者记录在其 LAFAN1 设置下达到预设指标。不能据此说它已严格控制所有变量复现论文图4，也不能说其结果证明了论文的全数据规模扩展、多接口控制或实机结论。额外观测、碰撞物理、数值精度及硬件差异都会影响实验可比性。
+\end{caution}

@@ -1,0 +1,32 @@
+\section{阅读结论与证据边界}
+\subsection{这份代码究竟复现了什么}
+SuperMimic 的关键并不是“换一个更大的模仿网络”，而是改变策略梯度的获得方式：用普通刚体仿真器收集状态转移，学习可微的动力学替代模型，再把跟踪回报沿短想象轨迹反向传播到策略。仿真器负责生成真实训练转移，\textbf{不需要提供梯度}；策略学习所需的雅可比来自学习到的世界模型\cite{liao_supermimic_2026}。
+
+目标仓库自述为独立、非官方复现，并明确指向论文图4(a)的受控 LAFAN1 比较\cite{zhang_supermimic_vibed}。代码默认载入40段 G1 重定向 LAFAN1 动作，README 将总时长记为2.45小时；这不等于论文主实验所用264.56小时、129,514段筛选后 BONES-SEED 动作。论文的多接口控制、扩展规律、双 GPU 训练与实机展示也没有在该仓库形成相应完整实现。
+
+\begin{insight}{最重要的三项判断}
+\begin{enumerate}
+\item \textbf{方法主干对齐。} 代码确有在线数据收集、$k=8$步自回归动力学学习、$H=32$步可微想象、软存活权重、终端价值 bootstrap 与固定的 $\lambda$-return 目标。
+\item \textbf{实现不等于逐字复刻。} 代码选择了局部状态增量、在线标准化、额外6维相对朝向观测、解析辅助头、sigmoid 软终止、bf16 矩阵乘法和额外预热等。需要说明各自来源，而不能把全部细节倒推为论文原设定。
+\item \textbf{跑通局部逻辑不等于复现性能。} 本次完成静态审读及16项 CPU 检查；没有执行 Isaac Lab 仿真、GPU 训练或检查已训练 checkpoint。仓库的0.829回报及40/40成功是作者记录，不是本次测量结果。
+\end{enumerate}
+\end{insight}
+
+\subsection{版本、文献与四种证据标签}
+论文来自用户 Zotero 条目 \code{IQ8SWVH7}，读取的 PDF 附件为 \code{TQR99565}，正文首页标注 \code{arXiv:2610.28480v1}，共19页。BibTeX 引用键 \code{liao_supermimic_2026} 与上述 Zotero 条目键不是同一种标识。PDF 的 SHA-256 和代码文件校验和保存在随附 \code{source_manifest.json} 中。
+
+源码固定在封面列出的完整提交；正文链接均指向该提交的具体行，而不是可变的 \code{main} 分支。仓库中“当时官方代码未发布”的叙述只作为其历史背景，\textbf{本报告未核验报告日期时官方仓库是否已更新}。
+
+\noindent\begin{tabularx}{\textwidth}{@{}P{20mm}Y Y@{}}
+\toprule
+证据类别 & 本文使用方式 & 不应推出的结论\\
+\midrule
+论文规定 & 章节、公式、附录表和页码定位 & 不能证明非官方实现完全遵守\\
+代码事实 & 固定提交中的函数、数据流和参数 & 不能仅由源码证明训练成绩\\
+解释推导 & 由公式及代码推得的张量维数、梯度路径和影响 & 不替代消融实验与收敛证明\\
+运行验证 & 明确列出执行环境、检查项和通过数 & 不外推到物理仿真、CUDA 或实机\\
+\bottomrule
+\end{tabularx}
+
+\subsection{建议的阅读顺序}
+建议先读第\ref{sec:framework}节的数据流及第\ref{sec:wm}、\ref{sec:actor}节的核心公式，再核对第\ref{sec:interface}节接口。第\ref{sec:matrix}节集中列出对齐差异，第\ref{sec:evaluation}节解释实验可比性。
