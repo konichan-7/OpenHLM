@@ -36,6 +36,30 @@ dr-level-2: F F F T F T F T T F
 
 The result is the official binary success rate, not an open-loop action MAE.
 
+## Training-time RTC checkpoint (synchronous execution)
+
+On 2026-10-30, checkpoint `rtc_run_20261030/3000` was evaluated with the same
+official 30-episode protocol, the synchronous `pi05_openhlm` client, and
+`SIMPLE_CHUNK_BLEND_STEPS=6`:
+
+- `dr-level-0`: 7/10 (70%)
+- `dr-level-1`: 6/10 (60%)
+- `dr-level-2`: 3/10 (30%)
+- total: 16/30 (53.3%)
+
+```text
+dr-level-0: T T T T T T F F F T
+dr-level-1: T T F T T F F T T F
+dr-level-2: T F F F F T F F F T
+```
+
+This evaluates the weights learned with training-time RTC, but it is **not an
+RTC execution benchmark**: the current SIMPLE client waits for each complete
+action chunk, does not send `action_prefix` / `inference_delay`, and only applies
+the existing six-frame boundary blend. The checkpoint is therefore 2 successes
+below `run1/3000` under synchronous execution; this result alone does not measure
+whether real-time overlapping chunk execution improves continuity or latency.
+
 ## Recorded video
 
 A successful DR-level-0 episode was composited with ffmpeg into a single 1280x720,
