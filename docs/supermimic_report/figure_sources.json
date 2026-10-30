@@ -1,0 +1,19 @@
+{
+  "paper": "SuperMimic: Scaling Humanoid Whole-Body Control with One Differentiable World Model",
+  "authors": "Qiayuan Liao et al.",
+  "arxiv_version": "2610.28480v1",
+  "access_date": "2026-10-30",
+  "source_pdf_url": "https://arxiv.org/pdf/2610.28480v1",
+  "source_pdf_sha256": "fe213017ab062f4acc3965da89abd3c29969163e144a2628a662b8ce46691009",
+  "source_tex_url": "https://arxiv.org/src/2610.28480v1",
+  "source_tex_sha256": "256a25330dbd7a7f4ebbc56228a57e6f426c9f155f1e7ace81e0a9d78a6292ab",
+  "method": "Extract vector figure regions from the versioned arXiv PDF; preserve panels, labels and data. Cairo re-emits clipped PDF drawing objects to avoid retaining invisible page text. No curve reconstruction or raster screenshot.",
+  "coordinates": "bbox_top_left_pt = [left, top, right, bottom], PDF points measured from page top left",
+  "rights_note": "Figures remain attributed to the paper authors and are not covered by the audited code repository's MIT license. Reproduced as attributed excerpts for this explanatory report.",
+  "figures": [
+    {"number": 2, "page": 4, "file": "paper_fig2_training_loop.pdf", "bbox_top_left_pt": [105, 70, 507, 201], "source_tex": "sections/method.tex", "topic": "SuperMimic training loop", "visible_text_checks": ["Collect data", "Fit world model", "Improve policy", "Replay buffer"]},
+    {"number": 3, "page": 7, "file": "paper_fig3_scaling.pdf", "bbox_top_left_pt": [105, 70, 507, 198], "source_tex": "sections/results.tex", "topic": "Compute and dataset scaling", "visible_text_checks": ["Normalized return", "Compute to target", "prediction error", "Dataset length"]},
+    {"number": 4, "page": 7, "file": "paper_fig4_controlled.pdf", "bbox_top_left_pt": [105, 309, 507, 437], "source_tex": "sections/results.tex", "topic": "LAFAN1 controlled comparison and horizon/critic ablation", "visible_text_checks": ["Normalized return", "Final return", "Hours to return", "Imagination horizon"]},
+    {"number": 5, "page": 8, "file": "paper_fig5_efficiency.pdf", "bbox_top_left_pt": [105, 70, 507, 180], "source_tex": "sections/results.tex", "topic": "Rollout throughput and analytic-gradient efficiency", "visible_text_checks": ["Steps per second", "Training return", "MuJoCo Warp", "Imagined steps"]}
+  ]
+}
