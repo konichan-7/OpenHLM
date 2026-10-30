@@ -22,6 +22,7 @@ OpenHLM/
 
 - [G1 Dex3 使用说明](src/openpi4OpenHLM/examples/simple_g1_dex3/README.md)：环境、数据、单任务/多任务训练、SIMPLE 客户端和服务。
 - [训练代码导读](docs/g1_dex3_training_code_walkthrough.md)：沿数据、模型、loss 和 checkpoint 理解代码。
+- [模型代码导读](docs/g1_dex3_model_code_walkthrough.md)：π₀/π₀.₅ 的注意力掩码、联合注意力、adaRMS、flow matching 与 KV cache 采样。
 - [闭环评估记录](docs/g1_dex3_simple_closed_loop_results.md)：已有结果及其验证边界。
 - [Rerun 回放](tools/rerun_g1_dataset/README.md)：按 episode 或全数据集查看机器人关节和第一视角图像。
 - [早期实施方案](docs/g1_dex3_pi05_simple_pipeline_plan.md)：历史设计和阶段记录，当前命令以使用说明为准。
