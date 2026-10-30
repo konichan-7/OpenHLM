@@ -10,11 +10,11 @@ two mappings that matter at the robot boundary:
 
 from __future__ import annotations
 
+from collections import deque
 import importlib.util
 import pathlib
 import sys
 import types
-from collections import deque
 
 import numpy as np
 
@@ -115,6 +115,8 @@ def main() -> int:
     }, waist
     # [vx, target_yaw, vy, d_height, torso_yaw, torso_pitch, torso_roll, turning]
     assert command == [0.0, 0.0, 0.0, 0.0, 30.0, 29.0, 28.0, 0.0], command
+    _, _, mobile_command = client.split_action(row, pin_constants=False)
+    assert mobile_command == [32.0, 35.0, 33.0, 30.25, 30.0, 29.0, 28.0, 34.0]
 
     proprio = np.arange(43, dtype=np.float32)
     history = np.array([0.0, -0.15, 0.0, 0.75], dtype=np.float32)
@@ -177,7 +179,55 @@ def main() -> int:
     agent._enqueue_chunk(raw)
     np.testing.assert_array_equal(agent.get_last_chunk(), raw)
 
-    print("SIMPLE CLIENT MAPPING + CHUNK BRIDGE OK")
+    class FakeRtcClient:
+        def __init__(self):
+            self.calls = []
+
+        def get_server_metadata(self):
+            return {
+                "action_protocol": "simple_g1_dex3",
+                "action_dim": 36,
+                "rtc_mode": "training_time",
+                "rtc_max_delay": 2,
+            }
+
+        def infer(self, observation):
+            self.calls.append(observation)
+            if "rtc/action_prefix" not in observation:
+                return {"actions": np.repeat(np.arange(6, dtype=np.float32)[:, None], 36, axis=1)}
+            prefix = np.asarray(observation["rtc/action_prefix"])
+            actions = np.full((6, 36), 100.0, dtype=np.float32)
+            actions[: len(prefix)] = prefix
+            return {"actions": actions}
+
+    rtc_client = FakeRtcClient()
+    rtc_agent = client.Pi05OpenhlmAgent(
+        robot,
+        "localhost",
+        8000,
+        client=rtc_client,
+        rtc_inference_delay=2,
+        chunk_blend_steps=0,
+        pin_constant_actions=False,
+    )
+    rtc_obs = {
+        "joint_qpos": np.zeros(43, dtype=np.float32),
+        "head_stereo_left": np.zeros((8, 8, 3), dtype=np.uint8),
+    }
+    for _ in range(7):
+        rtc_agent.get_action(rtc_obs)
+    assert len(rtc_client.calls) == 2
+    np.testing.assert_array_equal(
+        rtc_client.calls[1]["rtc/action_prefix"],
+        np.repeat(np.array([4, 5], dtype=np.float32)[:, None], 36, axis=1),
+    )
+    assert rtc_client.calls[1]["rtc/inference_delay"] == 2
+    assert len(rtc_agent._dataset_action_queue) == 3
+    assert rtc_agent._last_executed_action[0] == 100.0
+    assert rtc_agent._rtc_prefix_max_error == 0.0
+    rtc_agent.reset()
+
+    print("SIMPLE CLIENT MAPPING + CHUNK BRIDGE + RTC OK")
     return 0
 
 
