@@ -554,20 +554,46 @@ v = (x_t − x̂) / t
 
 推理走 `sample_actions_drifting`：只做一次 prefix 前向 + 一次 suffix 前向，没有迭代去噪。
 
-### 9.3 `use_training_time_rtc`：目前只有"壳"
+### 9.3 `use_training_time_rtc`：训练时实时分块
 
-配置字段存在，`train_pytorch.py` 的在线评估也会在开启时传入 `action_prefix` 和 `inference_delay`，
-`Policy.infer()` 同样会转发这些参数。但 **`PI0Pytorch.forward` 和 `sample_actions` 都没有使用它们**：
-`sample_actions(..., **kwargs)` 直接忽略多余参数。
+RTC（Real-Time Chunking）解决异步推理时新旧动作块的衔接：推理耗时 `d` 个控制步，新块的前 `d` 步
+在新块到达前已经由旧块执行，因此新块应当"接着这 `d` 步往下生成"。训练时 RTC 让模型在训练中就学会
+以已执行前缀为条件，推理时不需要额外的引导计算。只支持 π₀.₅ 的 PyTorch 模型，且不能与 `use_drifting`
+同时开启；JAX `Pi0` 未实现。
 
-因此在当前代码中开启 RTC：
+**训练**（`PI0Pytorch.forward`）：
 
-- 训练行为不变；
-- 评估日志里的 `sample_mse_rtc` 实际是普通采样的 MSE；
-- `rtc_max_delay`、`rtc_mask_loss` 不起作用。
+```text
+d ~ Uniform{0, ..., rtc_max_delay}              # 每个样本独立，sample_rtc_delay()
+prefix_mask[b, h] = h < d[b]                    # [B, H]
+t_tok = where(prefix_mask, 0, t)                # 每个动作 token 自己的时间步
+x_t   = t_tok·ε + (1−t_tok)·x                   # 前缀位置就是干净动作
+```
 
-需要 RTC 时，要在 `forward`（前缀位置用真实动作、loss mask）和 `sample_actions`（每步把前 `d` 步替换为
-已执行动作）里补实现。
+逐 token 的时间步经 `embed_suffix` 变成 `[B, H, 1024]` 的 adaRMS 条件，`GemmaRMSNorm` 对 3 维条件
+直接逐 token 调制。π₀.₅ 的 suffix 恰好只有动作 token，这是限定 π₀.₅ 的原因。
+
+`rtc_mask_loss=True` 时前缀位置 loss 置零，其余位置按 `总数 / 有效数` 缩放，使训练循环里的
+`losses.mean()` 恰好是有效位置的平均，训练脚本无需改动。
+
+**推理**（`sample_actions(..., action_prefix, inference_delay)`）：
+
+- 每个欧拉步前后都把前 `d` 步重置为 `action_prefix`，并给这些位置时间步 0；
+- 返回的动作块前 `d` 步等于 `action_prefix`；`inference_delay=0` 与普通采样完全一致；
+- 对未开启 RTC 训练的模型传入前缀会直接报错，避免在没学过条件化的模型上做硬替换。
+
+`action_prefix` 必须处于 **模型动作空间**（归一化并 pad 到 `action_dim`）。训练内评估直接切
+`actions[:, :6]`，满足这一点；但 `Policy.infer()` 只转发参数、不做归一化，部署时客户端或服务端需要
+先用 norm stats 把已执行动作归一化。当前 SIMPLE 客户端仍是同步推理，没有接入 RTC。
+
+开启方式（不改 G1 配置时可用命令行覆盖）：
+
+```bash
+scripts/train_pytorch.py pi05_simple_g1_dex3_tabletop \
+  --model.use-training-time-rtc --model.rtc-max-delay 10 ...
+```
+
+`rtc_max_delay` 必须小于 `action_horizon`，否则构造模型时报错。
 
 ---
 
@@ -672,7 +698,7 @@ Suffix
 4. **缺失相机仍有计算开销**：零图照样过 SigLIP，只在注意力中被 mask。
 5. **PyTorch 增强参数 batch 共享**：与 JAX 版逐样本随机不同。
 6. **训练时 checkpoint 被强制开启**：见 10.1。
-7. **RTC 未实现**：见 9.3。
+7. **RTC 的 `action_prefix` 需要归一化**：`Policy.infer()` 不处理，见 9.3。
 8. **`x_pred` 两处 clamp 阈值不一致**：见 9.1。
 9. **修改掩码或位置逻辑要同时改训练和推理**：见 7.3。
 10. **state 只通过 256-bin 文本进入 π₀.₅**：精度上限约 0.0078（归一化空间）；大于 1 截到 255，
