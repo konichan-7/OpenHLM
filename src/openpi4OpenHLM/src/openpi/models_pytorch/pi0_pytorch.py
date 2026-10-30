@@ -43,6 +43,11 @@ def create_sinusoidal_pos_embedding(
     return torch.cat([torch.sin(sin_input), torch.cos(sin_input)], dim=1)
 
 
+def make_rtc_prefix_mask(delay: Tensor, horizon: int) -> Tensor:
+    """Returns bool[B, H] that is True for the first `delay[b]` action steps of each sample."""
+    return torch.arange(horizon, device=delay.device)[None, :] < delay[:, None]
+
+
 def sample_beta(alpha, beta, bsize, device):
     alpha_t = torch.as_tensor(alpha, dtype=torch.float32, device=device)
     beta_t = torch.as_tensor(beta, dtype=torch.float32, device=device)
@@ -213,6 +218,19 @@ class PI0Pytorch(nn.Module):
         self.training_compile_enabled = False
         self.inference_compile_enabled = False
 
+        if config.use_training_time_rtc:
+            # Per-token timesteps are injected through adaRMSNorm, which only exists in the pi05 action expert,
+            # and pi05 suffix tokens are exactly the action tokens.
+            if not config.pi05:
+                raise ValueError("use_training_time_rtc requires pi05=True.")
+            if config.use_drifting:
+                raise ValueError("use_training_time_rtc is incompatible with use_drifting.")
+            if not 0 <= config.rtc_max_delay < config.action_horizon:
+                raise ValueError(
+                    f"rtc_max_delay must be in [0, action_horizon); got {config.rtc_max_delay} "
+                    f"with action_horizon={config.action_horizon}."
+                )
+
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
 
@@ -337,6 +355,49 @@ class PI0Pytorch(nn.Module):
             )
         return time.to(dtype=torch.float32, device=device)
 
+    def sample_rtc_delay(self, bsize, device):
+        """Samples the simulated inference delay for training-time RTC, uniform over [0, rtc_max_delay]."""
+        return torch.randint(0, self.config.rtc_max_delay + 1, (bsize,), device=device)
+
+    def _prepare_rtc_prefix(self, action_prefix, inference_delay, bsize, device):
+        """Builds the frozen action prefix used by training-time RTC at inference.
+
+        `action_prefix` must be in the model action space (normalized and padded like training actions).
+        Returns (prefix_actions float[B, H, D], prefix_mask bool[B, H]).
+        """
+        if action_prefix is None or inference_delay is None:
+            raise ValueError("action_prefix and inference_delay must be provided together.")
+        if not self.config.use_training_time_rtc:
+            raise ValueError("action_prefix requires a model trained with use_training_time_rtc=True.")
+
+        action_horizon = self.config.action_horizon
+        action_dim = self.config.action_dim
+        delay = int(inference_delay)
+        if not 0 <= delay <= self.config.rtc_max_delay:
+            raise ValueError(
+                f"inference_delay must be in [0, rtc_max_delay={self.config.rtc_max_delay}] "
+                f"(delays seen during training), got {delay}."
+            )
+
+        action_prefix = torch.as_tensor(action_prefix, dtype=torch.float32, device=device)
+        if action_prefix.ndim == 2:
+            action_prefix = action_prefix[None]
+        if action_prefix.ndim != 3:
+            raise ValueError(f"action_prefix must be [B, d, D] or [d, D], got shape {tuple(action_prefix.shape)}.")
+        if action_prefix.shape[0] == 1 and bsize > 1:
+            action_prefix = action_prefix.expand(bsize, -1, -1)
+        if action_prefix.shape[0] != bsize:
+            raise ValueError(f"action_prefix batch size {action_prefix.shape[0]} does not match {bsize}.")
+        if action_prefix.shape[1] < delay:
+            raise ValueError(f"action_prefix has {action_prefix.shape[1]} steps, fewer than inference_delay={delay}.")
+        if action_prefix.shape[2] > action_dim:
+            raise ValueError(f"action_prefix dim {action_prefix.shape[2]} exceeds model action_dim {action_dim}.")
+
+        prefix_actions = torch.zeros(bsize, action_horizon, action_dim, dtype=torch.float32, device=device)
+        prefix_actions[:, :delay, : action_prefix.shape[2]] = action_prefix[:, :delay]
+        delay_t = torch.full((bsize,), delay, dtype=torch.long, device=device)
+        return prefix_actions, make_rtc_prefix_mask(delay_t, action_horizon)
+
     def embed_prefix(
         self, images, img_masks, lang_tokens, lang_masks
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -389,7 +450,11 @@ class PI0Pytorch(nn.Module):
         return embs, pad_masks, att_masks
 
     def embed_suffix(self, state, noisy_actions, timestep):
-        """Embed state, noisy_actions, timestep to prepare for Expert Gemma processing."""
+        """Embed state, noisy_actions, timestep to prepare for Expert Gemma processing.
+
+        `timestep` is either float[B] (one timestep per sample) or float[B, H] (one timestep per action token,
+        used by training-time RTC).
+        """
         embs = []
         pad_masks = []
         att_masks = []
@@ -416,9 +481,13 @@ class PI0Pytorch(nn.Module):
 
         # Embed timestep using sine-cosine positional encoding with sensitivity in the range [0, 1]
         time_emb = create_sinusoidal_pos_embedding(
-            timestep, self.action_in_proj.out_features, min_period=4e-3, max_period=4.0, device=timestep.device
+            timestep.reshape(-1),
+            self.action_in_proj.out_features,
+            min_period=4e-3,
+            max_period=4.0,
+            device=timestep.device,
         )
-        time_emb = time_emb.type(dtype=timestep.dtype)
+        time_emb = time_emb.reshape(*timestep.shape, -1).type(dtype=timestep.dtype)
 
         # Fuse timestep + action information using an MLP
         def action_proj_func(noisy_actions):
@@ -427,8 +496,8 @@ class PI0Pytorch(nn.Module):
         action_emb = self._apply_checkpoint(action_proj_func, noisy_actions)
 
         if not self.pi05:
-            assert time_emb.ndim == 2
-            time_emb = time_emb[:, None, :].expand_as(action_emb)
+            if time_emb.ndim == 2:
+                time_emb = time_emb[:, None, :].expand_as(action_emb)
             action_time_emb = torch.cat([action_emb, time_emb], dim=2)
 
             # Apply MLP layers
@@ -544,8 +613,14 @@ class PI0Pytorch(nn.Module):
             total_loss = total_loss + loss_t.mean()
         return total_loss / action_horizon
 
-    def forward(self, observation, actions, noise=None, time=None) -> Tensor:
-        """Do a full training forward pass and compute the loss (batch_size x num_steps x num_motors)"""
+    def forward(self, observation, actions, noise=None, time=None, rtc_delay=None) -> Tensor:
+        """Do a full training forward pass and compute the loss (batch_size x num_steps x num_motors).
+
+        With training-time RTC, the first `rtc_delay[b]` action steps of each sample are given as clean actions
+        (per-token timestep 0), simulating actions already committed while inference runs. When `rtc_mask_loss`
+        is set, those positions get zero loss and the rest are rescaled so that `.mean()` of the returned tensor
+        equals the mean over unmasked elements.
+        """
         if self.config.use_drifting:
             return self.forward_drifting(observation, actions, noise=noise)
 
@@ -561,8 +636,15 @@ class PI0Pytorch(nn.Module):
         if time is None:
             time = self.sample_time(bsize, device)
 
-        # Standard flow matching
-        time_expanded = time[:, None, None]
+        rtc_prefix_mask = None
+        if self.config.use_training_time_rtc:
+            if rtc_delay is None:
+                rtc_delay = self.sample_rtc_delay(bsize, device)
+            rtc_prefix_mask = make_rtc_prefix_mask(rtc_delay, actions.shape[1])
+            time = torch.where(rtc_prefix_mask, torch.zeros_like(time[:, None]), time[:, None])
+
+        # Standard flow matching; with RTC, prefix positions have t=0 so x_t equals the clean actions there.
+        time_expanded = time[..., None] if time.ndim == 2 else time[:, None, None]
         x_t = time_expanded * noise + (1 - time_expanded) * actions
         # Compute u_t based on prediction mode
         if self.config.x_pred:
@@ -623,7 +705,11 @@ class PI0Pytorch(nn.Module):
         else:
             v_t = network_output
 
-        return F.mse_loss(u_t, v_t, reduction="none")
+        losses = F.mse_loss(u_t, v_t, reduction="none")
+        if rtc_prefix_mask is not None and self.config.rtc_mask_loss:
+            postfix = (~rtc_prefix_mask)[:, :, None].to(losses.dtype)
+            losses = losses * postfix * (postfix.numel() / postfix.sum().clamp_min(1.0))
+        return losses
 
     @torch.no_grad()
     def sample_actions_drifting(self, device, observation, noise=None, **kwargs) -> Tensor:
@@ -688,8 +774,15 @@ class PI0Pytorch(nn.Module):
         return self.action_out_proj(suffix_out)
 
     @torch.no_grad()
-    def sample_actions(self, device, observation, noise=None, num_steps=10, **kwargs) -> Tensor:
-        """Do a full inference forward and compute the action (batch_size x num_steps x num_motors)."""
+    def sample_actions(
+        self, device, observation, noise=None, num_steps=10, action_prefix=None, inference_delay=None, **kwargs
+    ) -> Tensor:
+        """Do a full inference forward and compute the action (batch_size x num_steps x num_motors).
+
+        For a model trained with training-time RTC, pass `action_prefix` (model action space, [B, d, D] or [d, D])
+        and `inference_delay`; the first `inference_delay` steps are held at the prefix with timestep 0 while the
+        remaining steps are denoised, and the returned chunk starts with the prefix.
+        """
         if self.config.use_drifting:
             return self.sample_actions_drifting(device, observation, noise=noise)
 
@@ -724,10 +817,22 @@ class PI0Pytorch(nn.Module):
         dt = -1.0 / num_steps
         dt = torch.tensor(dt, dtype=torch.float32, device=device)
 
+        rtc_prefix_actions = rtc_prefix_mask = None
+        if action_prefix is not None or inference_delay is not None:
+            rtc_prefix_actions, rtc_prefix_mask = self._prepare_rtc_prefix(
+                action_prefix, inference_delay, bsize, device
+            )
+
         x_t = noise
+        if rtc_prefix_mask is not None:
+            x_t = torch.where(rtc_prefix_mask[:, :, None], rtc_prefix_actions, x_t)
         time = torch.tensor(1.0, dtype=torch.float32, device=device)
         while time >= -dt / 2:
             expanded_time = time.expand(bsize)
+            if rtc_prefix_mask is not None:
+                expanded_time = torch.where(
+                    rtc_prefix_mask, torch.zeros_like(expanded_time[:, None]), expanded_time[:, None]
+                )
             v_t = self.denoise_step(
                 state,
                 prefix_pad_masks,
@@ -738,6 +843,8 @@ class PI0Pytorch(nn.Module):
 
             # Euler step - use new tensor assignment instead of in-place operation
             x_t = x_t + dt * v_t
+            if rtc_prefix_mask is not None:
+                x_t = torch.where(rtc_prefix_mask[:, :, None], rtc_prefix_actions, x_t)
             time += dt
         return x_t
 
@@ -791,5 +898,6 @@ class PI0Pytorch(nn.Module):
         # Handle x prediction mode: convert x_pred to v_pred
         # In this codebase, t=1 is noise and t=0 is target, so v_pred = (x_t - x_pred) / t
         if self.config.x_pred:
-            return (x_t - network_output) / timestep[:, None, None].clamp_min(1e-4)
+            t = timestep[..., None] if timestep.ndim == 2 else timestep[:, None, None]
+            return (x_t - network_output) / t.clamp_min(1e-4)
         return network_output
