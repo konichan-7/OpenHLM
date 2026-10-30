@@ -323,3 +323,58 @@ python -m simple.cli.eval --policy replay --env simple/G1WholebodyTabletopGraspM
 
 对应的链路检查为 `test_multitask_pipeline.py`。当前统计覆盖各 repo 的 train split；
 多任务推理的 prompt 需要客户端显式传入。`deploy_server.sh` 仍是桌面抓取单任务入口。
+
+## 12. 全量 PSI0 + training-time RTC
+
+`pi05_psi0_full_rtc` 直接读取公开的 `simple_14_tasks_merged_v30.zip`：
+
+- train：1,352 episodes / 432,553 frames / 14 tasks；
+- val：28 episodes / 10,659 frames；
+- LeRobot v3 单 parquet + 单连续视频布局；
+- 32 维 state、36 维 action、50 Hz、30 步 action chunk；
+- π0.5 全参数训练，不使用 LoRA；
+- training-time RTC delay 从 `0..10` 均匀采样，prefix loss 被屏蔽；
+- batch 8、55,000 steps，约覆盖一遍完整 train split。
+
+解压并计算 train-only 统计：
+
+```bash
+mkdir -p /data/psi_simple_tabletop/lerobot_v3
+unzip -n /data/psi_simple_tabletop/simple_14_tasks_merged_v30.zip \
+  -d /data/psi_simple_tabletop/lerobot_v3
+
+PYTHONPATH=src python scripts/compute_norm_stats.py \
+  --config-name pi05_psi0_full_rtc
+```
+
+训练：
+
+```bash
+PYTHONPATH=src torchrun --standalone --nnodes=1 --nproc_per_node=1 \
+  scripts/train_pytorch.py pi05_psi0_full_rtc \
+  --exp_name psi0_full_rtc_20261030 \
+  --no-wandb-enabled
+```
+
+完整 RTC 部署不是同步 chunk 边界平滑。客户端会在旧 chunk 剩余 10 步时后台请求新 chunk，
+将这 10 步作为 `rtc/action_prefix` 发送；旧动作继续执行。响应返回后，客户端验证 prefix
+往返误差并只执行新 suffix。全量数据包含移动任务，因此必须关闭桌面任务的底座常量覆盖：
+
+```bash
+# A100
+PYTHONPATH=src python scripts/serve_policy.py \
+  --port 8000 \
+  policy:checkpoint \
+  --policy.config pi05_psi0_full_rtc \
+  --policy.dir checkpoints/pi05_psi0_full_rtc/<run>/<step>
+
+# SIMPLE
+export SIMPLE_RTC_INFERENCE_DELAY=10
+export SIMPLE_PIN_CONSTANT_ACTIONS=0
+export SIMPLE_CHUNK_BLEND_STEPS=0
+python -m simple.cli.eval simple/G1WholebodyTabletopGraspMP-v0 pi05_openhlm dr-level-0 \
+  --host <server-ip> --port 8000
+```
+
+RTC 要求服务端 handshake 中存在 `rtc_mode=training_time` 且
+`rtc_max_delay >= SIMPLE_RTC_INFERENCE_DELAY`，不满足时客户端会拒绝执行。
