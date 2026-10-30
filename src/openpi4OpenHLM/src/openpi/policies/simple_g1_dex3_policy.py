@@ -170,6 +170,8 @@ class SimpleG1Dex3Inputs(transforms.DataTransformFn):
 class SimpleG1Dex3Outputs(transforms.DataTransformFn):
     """Return the first 36 action dims, un-normalised, for the SIMPLE client."""
 
+    pin_constants: bool = True
+
     def __call__(self, data: dict) -> dict:
         actions = np.asarray(data["actions"])
         if actions.shape[-1] < ACTION_DIM:
@@ -179,9 +181,11 @@ class SimpleG1Dex3Outputs(transforms.DataTransformFn):
         actions = actions[..., :ACTION_DIM]
         if not np.isfinite(actions).all():
             raise ValueError("model produced non-finite actions")
-        # Zero-IQR dims are numerical noise after un-normalisation; make the
-        # server output safe for every client, not just the SIMPLE one.
-        actions = pin_constant_dims(actions)
+        if self.pin_constants:
+            # Zero-IQR dims are numerical noise after un-normalisation in the
+            # fixed-base tabletop dataset.  Full PSI0 contains locomotion and
+            # deliberately disables this override.
+            actions = pin_constant_dims(actions)
         return {"actions": actions}
 
 

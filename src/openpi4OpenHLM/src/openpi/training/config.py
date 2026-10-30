@@ -96,6 +96,11 @@ class DataConfig:
     # the manifest instead of opening a single repository.
     dataset_manifest: str | None = None
 
+    # Optional extracted PSI0 LeRobot v3 split.  The public 14-task release uses
+    # a merged v3 parquet/video layout that is newer than this repository's
+    # pinned LeRobot reader.
+    psi0_v3_root: str | None = None
+
 
 class GroupFactory(Protocol):
     def __call__(self, model_config: _model.BaseModelConfig) -> _transforms.Group:
@@ -230,6 +235,11 @@ class LeRobotSimpleG1Dex3DataConfig(DataConfigFactory):
     # Optional multi-repository training manifest.  Kept on the data factory so
     # the training config can point at a curated set of tasks.
     dataset_manifest: str | None = None
+    # Optional extracted public PSI0 v3 split (train or val).
+    psi0_v3_root: str | None = None
+    # Tabletop-only data has constant height/base commands; the full public
+    # PSI0 dataset contains locomotion and must preserve all 36 action dims.
+    pin_constant_actions: bool = True
     # Kept explicit (and False) because these actions are absolute joint targets,
     # absolute height and high-level base commands; a delta transform would change
     # their meaning.  See the plan, section 7.1.
@@ -260,7 +270,7 @@ class LeRobotSimpleG1Dex3DataConfig(DataConfigFactory):
 
         data_transforms = _transforms.Group(
             inputs=[simple_g1_dex3_policy.SimpleG1Dex3Inputs(model_type=model_config.model_type)],
-            outputs=[simple_g1_dex3_policy.SimpleG1Dex3Outputs()],
+            outputs=[simple_g1_dex3_policy.SimpleG1Dex3Outputs(pin_constants=self.pin_constant_actions)],
         )
 
         return dataclasses.replace(
@@ -271,6 +281,7 @@ class LeRobotSimpleG1Dex3DataConfig(DataConfigFactory):
             use_quantile_norm=True,
             episode_indices=episode_indices,
             dataset_manifest=self.dataset_manifest,
+            psi0_v3_root=self.psi0_v3_root,
             # The SIMPLE package names the column "action" (singular); the default
             # "actions" would make LeRobotDataset raise KeyError on delta_timestamps.
             action_sequence_keys=("action",),
@@ -493,6 +504,55 @@ _CONFIGS = [
             "action_horizon": 30,
             "training_tasks": 3,
             "prompt": "grasp the object on the tabletop.",
+        },
+    ),
+    TrainConfig(
+        # Full public PSI0 release: 14 tasks, including locomotion and mobile
+        # manipulation.  The archive's train split has 432,553 frames / 1,352
+        # episodes in LeRobot v3 format.
+        name="pi05_psi0_full_rtc",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=36,
+            action_horizon=30,
+            discrete_state_input=True,
+            use_training_time_rtc=True,
+            rtc_max_delay=10,
+            rtc_mask_loss=True,
+        ),
+        data=LeRobotSimpleG1Dex3DataConfig(
+            repo_id="local/psi0_full_v3_train",
+            assets=AssetsConfig(asset_id="psi0_full_v3"),
+            psi0_v3_root="/data/psi_simple_tabletop/lerobot_v3/simple_merged_v30/train",
+            pin_constant_actions=False,
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        # One pass over all 432,553 frames is about 54,070 steps at batch 8.
+        batch_size=8,
+        num_workers=8,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=3e-5,
+            decay_steps=55_000,
+            decay_lr=3e-6,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=None,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        pytorch_weight_path="~/.cache/openpi/openpi-assets/checkpoints/pi05_base_pytorch",
+        num_train_steps=55_000,
+        save_interval=5_000,
+        eval_interval=500,
+        keep_period=5_000,
+        freeze_filter=nnx.Nothing,
+        policy_metadata={
+            "action_protocol": "simple_g1_dex3",
+            "action_dim": 36,
+            "state_dim": 32,
+            "action_horizon": 30,
+            "training_tasks": 14,
+            "rtc_mode": "training_time",
+            "rtc_max_delay": 10,
         },
     ),
     TrainConfig(

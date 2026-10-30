@@ -1,5 +1,5 @@
-from collections.abc import Iterator, Sequence
 import bisect
+from collections.abc import Iterator, Sequence
 import json
 import logging
 import multiprocessing
@@ -16,6 +16,7 @@ import torch
 
 import openpi.models.model as _model
 import openpi.training.config as _config
+from openpi.training.psi0_v3_dataset import Psi0V3Dataset
 import openpi.transforms as _transforms
 
 T_co = TypeVar("T_co", covariant=True)
@@ -161,7 +162,11 @@ def episode_frame_indices(dataset: Dataset, episode_indices: Sequence[int]) -> n
 
 
 def create_torch_dataset(
-    data_config: _config.DataConfig, action_horizon: int, model_config: _model.BaseModelConfig
+    data_config: _config.DataConfig,
+    action_horizon: int,
+    model_config: _model.BaseModelConfig,
+    *,
+    include_images: bool = True,
 ) -> Dataset:
     """Create a dataset for training."""
     repo_id = data_config.repo_id
@@ -169,6 +174,19 @@ def create_torch_dataset(
         raise ValueError("Repo ID is not set. Cannot create dataset.")
     if repo_id == "fake":
         return FakeDataset(model_config, num_samples=1024)
+    if data_config.psi0_v3_root is not None:
+        dataset = Psi0V3Dataset(
+            data_config.psi0_v3_root,
+            action_horizon,
+            include_images=include_images,
+        )
+        if data_config.episode_indices:
+            raise ValueError("episode_indices are not supported with a pre-split PSI0 v3 root")
+        if data_config.dataset_manifest is not None:
+            raise ValueError("dataset_manifest cannot be combined with a PSI0 v3 root")
+        if data_config.prompt_from_task:
+            dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset.tasks)])
+        return dataset
 
     def load_repo(repo: str, episode_indices: Sequence[int] | None = None) -> Dataset:
         metadata = lerobot_dataset.LeRobotDatasetMetadata(repo)
