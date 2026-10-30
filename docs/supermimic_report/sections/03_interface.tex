@@ -57,10 +57,10 @@ CSV 每帧包含根位置3、根四元数4、29个关节角，共36个数，关�
 令 $H_f=\heading(R_f^{\rm ref})$，未来帧 $j=f+1,\ldots,f+K$ 的特征为
 \begin{equation}
  g_{f,j}=\left[
- H_f^\top(p_j^{\rm ref}-p_f^{\rm ref}),\ 
- \six(H_f^\top R_j^{\rm ref}),\ 
- (R_j^{\rm ref})^\top v_j^{\rm ref},\ 
- (R_j^{\rm ref})^\top\omega_j^{\rm ref},\ 
+ H_f^\top(p_j^{\rm ref}-p_f^{\rm ref}),\ {}
+ \six(H_f^\top R_j^{\rm ref}),\ {}
+ (R_j^{\rm ref})^\top v_j^{\rm ref},\ {}
+ (R_j^{\rm ref})^\top\omega_j^{\rm ref},\ {}
  q_j^{\rm ref},\ 0.1\dot q_j^{\rm ref}
  \right].
 \end{equation}
@@ -87,7 +87,7 @@ CSV 每帧包含根位置3、根四元数4、29个关节角，共36个数，关�
 \subsection{终止、随机化与解析 FK}
 仿真硬终止是
 \begin{equation}\label{eq:hardterm}
- d_{t+1}=\mathbf1\{\lvert p_z^{\rm ref}-p_z\rvert>0.25\ \lor\ 
+ d_{t+1}=\mathbf1\{\lvert p_z^{\rm ref}-p_z\rvert>0.25\ \lor\ {}
  \lvert(R^{\rm ref})_{33}-R_{33}\rvert>0.8\}.
 \end{equation}
 第二项是两种根坐标系中重力方向z分量差的绝对值，不是欧拉角差；参考直立时阈值对应约78.5度倾斜。代码没有末端执行器偏差终止，与论文附录A一致。
